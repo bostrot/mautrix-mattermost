@@ -83,6 +83,11 @@ func (m *MattermostConnector) GetLoginFlows() []bridgev2.LoginFlow {
 			Description: "Login using your Mattermost email and password",
 			ID:          "mm-login-password",
 		},
+		{
+			Name:        "Login with Browser Cookie (SSO)",
+			Description: "Login using the MMAUTHTOKEN cookie from your browser session (for SSO/GitLab login)",
+			ID:          "mm-login-cookie",
+		},
 	}
 }
 
@@ -92,6 +97,8 @@ func (m *MattermostConnector) CreateLogin(ctx context.Context, user *bridgev2.Us
 		return &PATLoginProcess{User: user}, nil
 	case "mm-login-password":
 		return &PasswordLoginProcess{User: user}, nil
+	case "mm-login-cookie":
+		return &CookieLoginProcess{User: user}, nil
 	default:
 		return nil, fmt.Errorf("unknown login flow ID: %s", flowID)
 	}
@@ -284,6 +291,93 @@ func (p *PasswordLoginProcess) SubmitUserInput(ctx context.Context, input map[st
 }
 
 func (p *PasswordLoginProcess) Cancel() {}
+
+// --- Cookie / SSO Login ---
+
+// CookieLoginProcess handles SSO login via the MMAUTHTOKEN browser cookie.
+// The MMAUTHTOKEN value is identical to a Bearer token and can be used directly
+// with the Mattermost REST API. MMCSRF is only required for browser cookie-based
+// requests and is not needed here.
+type CookieLoginProcess struct {
+	User *bridgev2.User
+}
+
+var _ bridgev2.LoginProcessUserInput = (*CookieLoginProcess)(nil)
+
+func (p *CookieLoginProcess) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	return &bridgev2.LoginStep{
+		Type:   bridgev2.LoginStepTypeUserInput,
+		StepID: "com.bostrot.mattermost.enter_cookie",
+		Instructions: "Log in to Mattermost in your browser (via SSO/GitLab), then open DevTools " +
+			"(F12) → Application → Cookies → select your server → copy the value of MMAUTHTOKEN.",
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type: bridgev2.LoginInputFieldTypeUsername,
+					ID:   "server_url",
+					Name: "Server URL (e.g. https://mattermost.example.com)",
+				},
+				{
+					Type: bridgev2.LoginInputFieldTypePassword,
+					ID:   "token",
+					Name: "MMAUTHTOKEN cookie value",
+				},
+			},
+		},
+	}, nil
+}
+
+func (p *CookieLoginProcess) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+	serverURL := input["server_url"]
+	token := input["token"]
+	if serverURL == "" || token == "" {
+		return nil, fmt.Errorf("server_url and token are required")
+	}
+
+	// MMAUTHTOKEN is accepted as a Bearer token directly.
+	userID, username, err := mattermost.GetSelf(serverURL, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify cookie token: %w", err)
+	}
+
+	ul, err := p.User.NewLogin(ctx, &database.UserLogin{
+		ID:         networkid.UserLoginID(username),
+		RemoteName: username,
+		Metadata: &UserLoginMetadata{
+			UserID:    userID,
+			Username:  username,
+			Token:     token,
+			ServerURL: serverURL,
+		},
+	}, &bridgev2.NewLoginParams{
+		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
+			login.Client = &MattermostClient{
+				UserLogin: login,
+				Username:  username,
+				Token:     token,
+				ServerURL: serverURL,
+				UserID:    userID,
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create login: %w", err)
+	}
+	ul.Client.Connect(ul.Log.WithContext(ctx))
+
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeComplete,
+		StepID:       "com.bostrot.mattermost.complete",
+		Instructions: fmt.Sprintf("Successfully logged in as %s", username),
+		CompleteParams: &bridgev2.LoginCompleteParams{
+			UserLoginID: ul.ID,
+			UserLogin:   ul,
+		},
+	}, nil
+}
+
+func (p *CookieLoginProcess) Cancel() {}
 
 // Config holds any future bridge-specific configuration.
 type Config struct{}
