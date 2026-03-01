@@ -1,0 +1,15 @@
+# Config and registration files contain secrets — use example-config.yaml as template
+*.yaml
+!example-config.yaml
+
+# Databases and logs
+*.db*
+*.log*
+/logs/
+
+# Build outputs
+/mautrix-mattermost
+/tmp/
+
+# Vendor dir if used
+/vendor/
