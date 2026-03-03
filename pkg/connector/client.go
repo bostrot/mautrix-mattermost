@@ -320,10 +320,22 @@ func (c *MattermostClient) processEvents() {
 			if evt.UserID == c.UserID {
 				continue // don't echo own typing
 			}
+			portalKey := networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID}
 			c.UserLogin.QueueRemoteEvent(&mmTypingEvent{
 				channelID: networkid.PortalID(evt.ChannelID),
 				receiver:  c.UserLogin.ID,
 				senderID:  evt.UserID,
+			})
+			// Mark portal as read on behalf of the logged-in user when
+			// someone else starts typing — they're clearly looking at it.
+			c.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
+				EventMeta: simplevent.EventMeta{
+					Type:       bridgev2.RemoteEventReadReceipt,
+					PortalKey:  portalKey,
+					Sender:     bridgev2.EventSender{IsFromMe: true, SenderLogin: c.UserLogin.ID},
+					LogContext: func(z zerolog.Context) zerolog.Context { return z },
+				},
+				ReadUpTo: time.Now(),
 			})
 
 		case *mattermost.ChannelCreatedEvent:
