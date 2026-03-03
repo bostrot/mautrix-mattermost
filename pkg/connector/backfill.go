@@ -72,9 +72,20 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 
 	hasMore := len(pl.Order) >= params.Count
 
+	// Mark read on forward backfill OR if every message in this batch is
+	// from the logged-in user (e.g. initial portal creation triggered by a
+	// self-sent message — we don't want to notify for our own history).
+	allFromMe := len(backfill) > 0
+	for _, m := range backfill {
+		if !m.Sender.IsFromMe {
+			allFromMe = false
+			break
+		}
+	}
+
 	return &bridgev2.FetchMessagesResponse{
 		Messages: backfill,
 		HasMore:  hasMore,
-		MarkRead: params.Forward,
+		MarkRead: params.Forward || allFromMe,
 	}, nil
 }

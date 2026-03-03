@@ -132,9 +132,11 @@ func (c *Client) parseEvent(raw []byte) {
 			return
 		}
 		c.Events <- &PostedEvent{
-			Post:      post,
-			ChannelID: post.ChannelID,
-			TeamID:    strFromData(env.Data, "team_id"),
+			Post:        post,
+			ChannelID:   post.ChannelID,
+			TeamID:      strFromData(env.Data, "team_id"),
+			ChannelType: strFromData(env.Data, "channel_type"),
+			ChannelName: strFromData(env.Data, "channel_name"),
 		}
 
 	case "post_edited":

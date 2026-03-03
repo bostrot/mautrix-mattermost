@@ -142,9 +142,12 @@ type HelloEvent struct {
 
 // PostedEvent carries a newly created post.
 type PostedEvent struct {
-	Post      *Post
-	ChannelID string
-	TeamID    string
+	Post        *Post
+	ChannelID   string
+	TeamID      string
+	// Channel metadata sent inline by Mattermost – avoids an extra REST round-trip.
+	ChannelType string // "D" = DM, "G" = group DM, "O" = public, "P" = private
+	ChannelName string // raw channel name, e.g. "userId1__userId2" for DMs
 }
 
 // PostEditedEvent carries the updated post.

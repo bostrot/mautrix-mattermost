@@ -205,7 +205,23 @@ func (c *MattermostClient) processEvents() {
 			if evt.Post == nil {
 				continue
 			}
-			isFromMe := evt.Post.UserID == c.UserID
+			// Pre-seed the channel cache from the inline WS metadata so that
+			// GetChatInfo never races against a concurrent REST fetch.
+			if evt.ChannelType != "" && evt.ChannelName != "" {
+				c.mu.Lock()
+				if c.channels == nil {
+					c.channels = make(map[string]*mattermost.Channel)
+				}
+				if _, exists := c.channels[evt.ChannelID]; !exists {
+					c.channels[evt.ChannelID] = &mattermost.Channel{
+						ID:   evt.ChannelID,
+						Type: evt.ChannelType,
+						Name: evt.ChannelName,
+					}
+				}
+				c.mu.Unlock()
+			}
+			isFromMe := c.UserID != "" && evt.Post.UserID == c.UserID
 			sender := bridgev2.EventSender{
 				Sender:   networkid.UserID(evt.Post.UserID),
 				IsFromMe: isFromMe,
