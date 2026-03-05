@@ -193,11 +193,12 @@ func (c *MattermostClient) HandleMatrixMessageRemove(ctx context.Context, msg *b
 
 // PreHandleMatrixReaction validates and extracts the emoji name.
 func (c *MattermostClient) PreHandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
-	emoji := msg.Content.RelatesTo.Key
+	unicode := msg.Content.RelatesTo.Key
+	shortcode := unicodeToMMEmoji(unicode)
 	return bridgev2.MatrixReactionPreResponse{
 		SenderID: networkid.UserID(c.UserID),
-		EmojiID:  networkid.EmojiID(emoji),
-		Emoji:    emoji,
+		EmojiID:  networkid.EmojiID(shortcode),
+		Emoji:    unicode,
 	}, nil
 }
 
@@ -209,13 +210,13 @@ func (c *MattermostClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 	if cl == nil {
 		return nil, fmt.Errorf("not connected to Mattermost")
 	}
-	emoji := msg.PreHandleResp.Emoji
-	if err := mattermost.AddReaction(c.serverURL(), c.Token, c.UserID, string(msg.TargetMessage.ID), emoji); err != nil {
+	shortcode := string(msg.PreHandleResp.EmojiID)
+	if err := mattermost.AddReaction(c.serverURL(), c.Token, c.UserID, string(msg.TargetMessage.ID), shortcode); err != nil {
 		return nil, err
 	}
 	return &database.Reaction{
 		EmojiID: msg.PreHandleResp.EmojiID,
-		Emoji:   emoji,
+		Emoji:   msg.PreHandleResp.Emoji,
 	}, nil
 }
 
@@ -227,11 +228,11 @@ func (c *MattermostClient) HandleMatrixReactionRemove(ctx context.Context, msg *
 	if cl == nil {
 		return fmt.Errorf("not connected to Mattermost")
 	}
-	emoji := msg.TargetReaction.Emoji
-	if emoji == "" {
-		emoji = string(msg.TargetReaction.EmojiID)
+	shortcode := string(msg.TargetReaction.EmojiID)
+	if shortcode == "" {
+		shortcode = unicodeToMMEmoji(msg.TargetReaction.Emoji)
 	}
-	return mattermost.RemoveReaction(c.serverURL(), c.Token, c.UserID, string(msg.TargetReaction.MessageID), emoji)
+	return mattermost.RemoveReaction(c.serverURL(), c.Token, c.UserID, string(msg.TargetReaction.MessageID), shortcode)
 }
 
 // HandleMatrixTyping forwards a Matrix typing event to Mattermost.

@@ -103,11 +103,12 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 
 	// Convert text body.
 	if post.Message != "" {
+		msgText := replaceEmojiShortcodes(post.Message)
 		if len(parts) > 0 {
 			// Embed caption into the first attachment (Matrix caption convention / MSC2530).
 			firstContent := parts[0].Content
 			firstContent.FileName = firstContent.Body
-			rendered := format.RenderMarkdown(post.Message, true, false)
+			rendered := format.RenderMarkdown(msgText, true, false)
 			firstContent.Body = rendered.Body
 			if rendered.FormattedBody != "" {
 				firstContent.FormattedBody = rendered.FormattedBody
@@ -115,7 +116,7 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			}
 		} else {
 			// Text-only message.
-			textContent := format.RenderMarkdown(post.Message, true, false)
+			textContent := format.RenderMarkdown(msgText, true, false)
 			textContent.MsgType = event.MsgText
 			var replyTo *networkid.MessageOptionalPartID
 			if post.RootID != "" {

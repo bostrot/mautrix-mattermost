@@ -313,7 +313,7 @@ func (c *MattermostClient) processEvents() {
 				},
 				TargetMessage: networkid.MessageID(evt.Reaction.PostID),
 				EmojiID:       networkid.EmojiID(evt.Reaction.EmojiName),
-				Emoji:         evt.Reaction.EmojiName,
+				Emoji:         mmEmojiToUnicode(evt.Reaction.EmojiName),
 			})
 
 		case *mattermost.TypingEvent:
@@ -481,10 +481,7 @@ func (c *MattermostClient) LogoutRemote(ctx context.Context) {
 }
 
 func (c *MattermostClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
-	if c.UserID != "" {
-		return string(userID) == c.UserID
-	}
-	return string(userID) == c.Username
+	return string(userID) == c.UserID
 }
 
 // dmOtherUserID extracts the other participant's ID from a DM channel name.
