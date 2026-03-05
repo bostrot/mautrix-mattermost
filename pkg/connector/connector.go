@@ -161,7 +161,7 @@ func (p *PATLoginProcess) SubmitUserInput(ctx context.Context, input map[string]
 	}
 
 	ul, err := p.User.NewLogin(ctx, &database.UserLogin{
-		ID:         networkid.UserLoginID(username),
+		ID:         networkid.UserLoginID(userID),
 		RemoteName: username,
 		Metadata: &UserLoginMetadata{
 			UserID:    userID,
@@ -254,7 +254,7 @@ func (p *PasswordLoginProcess) SubmitUserInput(ctx context.Context, input map[st
 	}
 
 	ul, err := p.User.NewLogin(ctx, &database.UserLogin{
-		ID:         networkid.UserLoginID(username),
+		ID:         networkid.UserLoginID(userID),
 		RemoteName: username,
 		Metadata: &UserLoginMetadata{
 			UserID:    userID,
@@ -341,7 +341,7 @@ func (p *CookieLoginProcess) SubmitUserInput(ctx context.Context, input map[stri
 	}
 
 	ul, err := p.User.NewLogin(ctx, &database.UserLogin{
-		ID:         networkid.UserLoginID(username),
+		ID:         networkid.UserLoginID(userID),
 		RemoteName: username,
 		Metadata: &UserLoginMetadata{
 			UserID:    userID,
