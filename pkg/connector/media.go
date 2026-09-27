@@ -118,12 +118,10 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			// Text-only message.
 			textContent := format.RenderMarkdown(msgText, true, false)
 			textContent.MsgType = event.MsgText
-			var replyTo *networkid.MessageOptionalPartID
-			if post.RootID != "" {
-				replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-			}
+			replyTo, threadRoot := replyAndThreadInfo(post)
 			cm := &bridgev2.ConvertedMessage{
-				ReplyTo: replyTo,
+				ReplyTo:    replyTo,
+				ThreadRoot: threadRoot,
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					ID:      networkid.PartID(""),
 					Type:    event.EventMessage,
@@ -146,15 +144,30 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		}}
 	}
 
-	var replyTo *networkid.MessageOptionalPartID
-	if post.RootID != "" {
-		replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-	}
+	replyTo, threadRoot := replyAndThreadInfo(post)
 
 	return &bridgev2.ConvertedMessage{
-		ReplyTo: replyTo,
-		Parts:   parts,
+		ReplyTo:    replyTo,
+		ThreadRoot: threadRoot,
+		Parts:      parts,
 	}, nil
+}
+
+// replyAndThreadInfo derives the Matrix reply-quote and thread-grouping info
+// from a Mattermost post's RootID. Mattermost threads are flat: every reply's
+// RootID points directly at the thread's root post (never at an intermediate
+// reply), so the same ID is used for both. ReplyTo gives clients that don't
+// render real Matrix threads a quoted-reply fallback; ThreadRoot is what
+// actually groups the message into a Matrix thread (see MSC3440) instead of
+// leaving it as a flat, ungrouped message in the main timeline.
+func replyAndThreadInfo(post *mattermost.Post) (replyTo *networkid.MessageOptionalPartID, threadRoot *networkid.MessageID) {
+	if post.RootID == "" {
+		return nil, nil
+	}
+	replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
+	root := networkid.MessageID(post.RootID)
+	threadRoot = &root
+	return replyTo, threadRoot
 }
 
 // resolveFiles returns the FileInfo list from post.Metadata.Files when present,
