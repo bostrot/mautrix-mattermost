@@ -1,10 +1,12 @@
 package connector
 
 import (
+	"context"
 	"regexp"
 	"testing"
 
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 )
 
 func TestWebviewCookieStep(t *testing.T) {
@@ -51,6 +53,28 @@ func TestWebviewCookieStep_KeepsSubpath(t *testing.T) {
 	_, serverURL, err := webviewCookieStep("https://example.com/mattermost/")
 	if err != nil || serverURL != "https://example.com/mattermost" {
 		t.Errorf("serverURL = %q, err = %v", serverURL, err)
+	}
+}
+
+func TestWebviewStartWithOverride(t *testing.T) {
+	p := &WebviewLoginProcess{}
+	old := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		Metadata: &UserLoginMetadata{ServerURL: "https://mm.example.com"},
+	}}
+	step, err := p.StartWithOverride(context.Background(), old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Type != bridgev2.LoginStepTypeCookies || p.serverURL != "https://mm.example.com" {
+		t.Errorf("type = %q, serverURL = %q; want cookies step for stored server", step.Type, p.serverURL)
+	}
+
+	// No stored server URL: fall back to asking for it.
+	p = &WebviewLoginProcess{}
+	old = &bridgev2.UserLogin{UserLogin: &database.UserLogin{Metadata: &UserLoginMetadata{}}}
+	step, err = p.StartWithOverride(context.Background(), old)
+	if err != nil || step.Type != bridgev2.LoginStepTypeUserInput {
+		t.Errorf("type = %q, err = %v; want user input step", step.Type, err)
 	}
 }
 

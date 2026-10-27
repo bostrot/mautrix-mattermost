@@ -401,6 +401,16 @@ type WebviewLoginProcess struct {
 
 var _ bridgev2.LoginProcessUserInput = (*WebviewLoginProcess)(nil)
 var _ bridgev2.LoginProcessCookies = (*WebviewLoginProcess)(nil)
+var _ bridgev2.LoginProcessWithOverride = (*WebviewLoginProcess)(nil)
+
+// StartWithOverride skips the server URL prompt when re-authenticating an
+// existing login, reusing the server URL stored in its metadata.
+func (p *WebviewLoginProcess) StartWithOverride(ctx context.Context, override *bridgev2.UserLogin) (*bridgev2.LoginStep, error) {
+	if meta, ok := override.Metadata.(*UserLoginMetadata); ok && meta.ServerURL != "" {
+		return p.SubmitUserInput(ctx, map[string]string{"server_url": meta.ServerURL})
+	}
+	return p.Start(ctx)
+}
 
 func (p *WebviewLoginProcess) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
