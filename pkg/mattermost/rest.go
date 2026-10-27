@@ -3,6 +3,7 @@ package mattermost
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -11,6 +12,10 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrUnauthorized is returned (wrapped) when Mattermost rejects the token with HTTP 401,
+// e.g. because the session expired or was revoked.
+var ErrUnauthorized = errors.New("mattermost: unauthorized")
 
 // normalizeURL trims any trailing slashes from a server URL.
 func normalizeURL(serverURL string) string {
@@ -202,6 +207,10 @@ func doGet(serverURL, token, path string, out any) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: HTTP 401 from %s: %s", ErrUnauthorized, path, string(body))
+	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(body))
