@@ -481,7 +481,12 @@ func (c *MattermostClient) LogoutRemote(ctx context.Context) {
 }
 
 func (c *MattermostClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
-	return string(userID) == c.UserID
+	if c.UserID != "" {
+		return string(userID) == c.UserID
+	}
+	// UserID hasn't been resolved yet (e.g. during early login); fall back to
+	// comparing against Username so self-detection still works.
+	return string(userID) == c.Username
 }
 
 // dmOtherUserID extracts the other participant's ID from a DM channel name.
