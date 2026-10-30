@@ -23,6 +23,7 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
 		Reply:               event.CapLevelFullySupported,
+		Thread:              event.CapLevelFullySupported,
 		Reaction:            event.CapLevelFullySupported,
 		TypingNotifications: true,
 		File: event.FileFeatureMap{
@@ -51,9 +52,31 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	channelID := string(msg.Portal.ID)
+	// Mattermost only has one relation (RootID, which always points at the
+	// thread root), so a Matrix thread reply must take priority over a plain
+	// reply-quote here: without this, replying inside a Beeper/Matrix thread
+	// (which populates ThreadRoot, not ReplyTo) would fall through with an
+	// empty rootID and post to the main channel instead of into the thread.
 	var rootID string
-	if msg.ReplyTo != nil {
+	if msg.ThreadRoot != nil {
+		rootID = string(msg.ThreadRoot.ID)
+	} else if msg.ReplyTo != nil {
 		rootID = string(msg.ReplyTo.ID)
+	}
+	if rootID != "" {
+		// Mattermost's API rejects root_id unless it's literally the thread's
+		// root post (HTTP 400 api.post.create_post.root_id.app_error) - it
+		// can't point at another reply within the thread. Matrix has no such
+		// restriction (a reply/thread-root can target any earlier message in
+		// the thread), so resolve to the real root before sending: if the
+		// target post is itself already a reply, its own RootID is the
+		// thread's actual root.
+		if target, err := mattermost.GetPost(c.serverURL(), c.Token, rootID); err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Str("target_post_id", rootID).
+				Msg("Failed to resolve thread root post, sending with original target ID")
+		} else if target.RootID != "" {
+			rootID = target.RootID
+		}
 	}
 
 	switch content.MsgType {
@@ -80,7 +103,12 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		if content.MsgType == event.MsgEmote {
 			body = "_" + body + "_"
 		}
-		zerolog.Ctx(ctx).Debug().Str("channel", channelID).Msg("Sending message to Mattermost")
+		zerolog.Ctx(ctx).Debug().
+			Str("channel", channelID).
+			Str("root_id", rootID).
+			Bool("has_thread_root", msg.ThreadRoot != nil).
+			Bool("has_reply_to", msg.ReplyTo != nil).
+			Msg("Sending message to Mattermost")
 		postID, err := mattermost.SendPost(c.serverURL(), c.Token, channelID, body, rootID)
 		if err != nil {
 			return nil, wrapSendErr(err)
