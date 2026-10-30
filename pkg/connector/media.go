@@ -118,10 +118,8 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			// Text-only message.
 			textContent := format.RenderMarkdown(msgText, true, false)
 			textContent.MsgType = event.MsgText
-			replyTo, threadRoot := replyAndThreadInfo(post)
 			cm := &bridgev2.ConvertedMessage{
-				ReplyTo:    replyTo,
-				ThreadRoot: threadRoot,
+				ThreadRoot: threadRootOf(post),
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					ID:      networkid.PartID(""),
 					Type:    event.EventMessage,
@@ -144,30 +142,25 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		}}
 	}
 
-	replyTo, threadRoot := replyAndThreadInfo(post)
-
 	return &bridgev2.ConvertedMessage{
-		ReplyTo:    replyTo,
-		ThreadRoot: threadRoot,
+		ThreadRoot: threadRootOf(post),
 		Parts:      parts,
 	}, nil
 }
 
-// replyAndThreadInfo derives the Matrix reply-quote and thread-grouping info
-// from a Mattermost post's RootID. Mattermost threads are flat: every reply's
-// RootID points directly at the thread's root post (never at an intermediate
-// reply), so the same ID is used for both. ReplyTo gives clients that don't
-// render real Matrix threads a quoted-reply fallback; ThreadRoot is what
-// actually groups the message into a Matrix thread (see MSC3440) instead of
-// leaving it as a flat, ungrouped message in the main timeline.
-func replyAndThreadInfo(post *mattermost.Post) (replyTo *networkid.MessageOptionalPartID, threadRoot *networkid.MessageID) {
+// threadRootOf returns the Matrix thread root for a Mattermost thread reply.
+// Mattermost threads are flat: every reply's RootID points directly at the
+// thread's root post, so it maps straight to a Matrix thread (MSC3440).
+// ReplyTo is deliberately left unset: bridgev2 would turn it into a
+// non-fallback m.in_reply_to and mention the root's author on every thread
+// message, whereas ThreadRoot alone gets the usual fallback reply to the
+// previous thread event, like native Matrix thread messages.
+func threadRootOf(post *mattermost.Post) *networkid.MessageID {
 	if post.RootID == "" {
-		return nil, nil
+		return nil
 	}
-	replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
 	root := networkid.MessageID(post.RootID)
-	threadRoot = &root
-	return replyTo, threadRoot
+	return &root
 }
 
 // resolveFiles returns the FileInfo list from post.Metadata.Files when present,
