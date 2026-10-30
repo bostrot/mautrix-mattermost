@@ -23,6 +23,7 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
 		Reply:               event.CapLevelFullySupported,
+		Thread:              event.CapLevelFullySupported,
 		Reaction:            event.CapLevelFullySupported,
 		TypingNotifications: true,
 		File: event.FileFeatureMap{
