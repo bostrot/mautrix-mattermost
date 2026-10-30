@@ -4,6 +4,9 @@ package connector
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"go.mau.fi/util/configupgrade"
 
@@ -88,6 +91,11 @@ func (m *MattermostConnector) GetLoginFlows() []bridgev2.LoginFlow {
 			Description: "Login using the MMAUTHTOKEN cookie from your browser session (for SSO/GitLab login)",
 			ID:          "mm-login-cookie",
 		},
+		{
+			Name:        "Login in Browser Window (SSO)",
+			Description: "Log in to Mattermost in a built-in browser window; the MMAUTHTOKEN cookie is collected automatically",
+			ID:          "mm-login-webview",
+		},
 	}
 }
 
@@ -99,6 +107,8 @@ func (m *MattermostConnector) CreateLogin(ctx context.Context, user *bridgev2.Us
 		return &PasswordLoginProcess{User: user}, nil
 	case "mm-login-cookie":
 		return &CookieLoginProcess{User: user}, nil
+	case "mm-login-webview":
+		return &WebviewLoginProcess{CookieLoginProcess: CookieLoginProcess{User: user}}, nil
 	default:
 		return nil, fmt.Errorf("unknown login flow ID: %s", flowID)
 	}
@@ -378,6 +388,91 @@ func (p *CookieLoginProcess) SubmitUserInput(ctx context.Context, input map[stri
 }
 
 func (p *CookieLoginProcess) Cancel() {}
+
+// --- Webview / SSO Login ---
+
+// WebviewLoginProcess asks for the server URL, then has the client open the
+// Mattermost login page in a webview and collect the HttpOnly MMAUTHTOKEN
+// cookie itself, so SSO users don't have to copy it out of DevTools.
+type WebviewLoginProcess struct {
+	CookieLoginProcess
+	serverURL string
+}
+
+var _ bridgev2.LoginProcessUserInput = (*WebviewLoginProcess)(nil)
+var _ bridgev2.LoginProcessCookies = (*WebviewLoginProcess)(nil)
+var _ bridgev2.LoginProcessWithOverride = (*WebviewLoginProcess)(nil)
+
+// StartWithOverride skips the server URL prompt when re-authenticating an
+// existing login, reusing the server URL stored in its metadata.
+func (p *WebviewLoginProcess) StartWithOverride(ctx context.Context, override *bridgev2.UserLogin) (*bridgev2.LoginStep, error) {
+	if meta, ok := override.Metadata.(*UserLoginMetadata); ok && meta.ServerURL != "" {
+		return p.SubmitUserInput(ctx, map[string]string{"server_url": meta.ServerURL})
+	}
+	return p.Start(ctx)
+}
+
+func (p *WebviewLoginProcess) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeUserInput,
+		StepID:       "com.bostrot.mattermost.enter_server_url",
+		Instructions: "Enter your Mattermost server URL",
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type: bridgev2.LoginInputFieldTypeURL,
+					ID:   "server_url",
+					Name: "Server URL (e.g. https://mattermost.example.com)",
+				},
+			},
+		},
+	}, nil
+}
+
+func (p *WebviewLoginProcess) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+	step, serverURL, err := webviewCookieStep(input["server_url"])
+	if err != nil {
+		return nil, err
+	}
+	p.serverURL = serverURL
+	return step, nil
+}
+
+func (p *WebviewLoginProcess) SubmitCookies(ctx context.Context, cookies map[string]string) (*bridgev2.LoginStep, error) {
+	return p.CookieLoginProcess.SubmitUserInput(ctx, map[string]string{
+		"server_url": p.serverURL,
+		"token":      cookies["token"],
+	})
+}
+
+// webviewCookieStep builds the cookies login step for the given server URL and
+// returns the normalized URL.
+func webviewCookieStep(rawURL string) (*bridgev2.LoginStep, string, error) {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, "", fmt.Errorf("invalid server URL %q", rawURL)
+	}
+	serverURL := strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeCookies,
+		StepID:       "com.bostrot.mattermost.webview_cookie",
+		Instructions: "Log in to Mattermost in the browser window",
+		CookiesParams: &bridgev2.LoginCookiesParams{
+			URL: serverURL + "/login",
+			Fields: []bridgev2.LoginCookieField{{
+				ID:       "token",
+				Required: true,
+				Sources: []bridgev2.LoginCookieFieldSource{{
+					Type:         bridgev2.LoginCookieTypeCookie,
+					Name:         "MMAUTHTOKEN",
+					CookieDomain: u.Hostname(),
+				}},
+			}},
+			// After login Mattermost lands on /<team>/channels/... or /<team>/messages/...
+			WaitForURLPattern: "^" + regexp.QuoteMeta(serverURL) + "/[^/]+/(channels|messages)/",
+		},
+	}, serverURL, nil
+}
 
 // Config holds any future bridge-specific configuration.
 type Config struct{}
