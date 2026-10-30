@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -179,6 +180,16 @@ func (c *MattermostClient) connectLoop() {
 			c.mu.Unlock()
 			c.processEvents() // blocks until WS closes
 			backoff = 5 * time.Second
+		}
+		// Mattermost closes the WebSocket without an auth error event when the
+		// token is expired or revoked, so check the token over REST before retrying.
+		if _, _, err := mattermost.GetSelf(c.serverURL(), c.Token); errors.Is(err, mattermost.ErrUnauthorized) {
+			c.UserLogin.BridgeState.Send(status.BridgeState{
+				StateEvent: status.StateBadCredentials,
+				Error:      "mm-token-invalid",
+				Message:    "Mattermost session expired or was revoked, please log in again",
+			})
+			return
 		}
 		select {
 		case <-c.done:

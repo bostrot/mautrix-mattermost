@@ -2,6 +2,7 @@ package mattermost
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -40,6 +41,21 @@ func TestGetSelf_HTTPError(t *testing.T) {
 	_, _, err := GetSelf(srv.URL, "badtoken")
 	if err == nil {
 		t.Fatal("expected error for 401 response")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want ErrUnauthorized", err)
+	}
+}
+
+func TestGetSelf_ServerErrorIsNotUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, _, err := GetSelf(srv.URL, "token")
+	if err == nil || errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want a non-ErrUnauthorized error", err)
 	}
 }
 
