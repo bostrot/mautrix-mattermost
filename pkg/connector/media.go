@@ -118,12 +118,8 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			// Text-only message.
 			textContent := format.RenderMarkdown(msgText, true, false)
 			textContent.MsgType = event.MsgText
-			var replyTo *networkid.MessageOptionalPartID
-			if post.RootID != "" {
-				replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-			}
 			cm := &bridgev2.ConvertedMessage{
-				ReplyTo: replyTo,
+				ThreadRoot: threadRootOf(post),
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					ID:      networkid.PartID(""),
 					Type:    event.EventMessage,
@@ -146,15 +142,25 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		}}
 	}
 
-	var replyTo *networkid.MessageOptionalPartID
-	if post.RootID != "" {
-		replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-	}
-
 	return &bridgev2.ConvertedMessage{
-		ReplyTo: replyTo,
-		Parts:   parts,
+		ThreadRoot: threadRootOf(post),
+		Parts:      parts,
 	}, nil
+}
+
+// threadRootOf returns the Matrix thread root for a Mattermost thread reply.
+// Mattermost threads are flat: every reply's RootID points directly at the
+// thread's root post, so it maps straight to a Matrix thread (MSC3440).
+// ReplyTo is deliberately left unset: bridgev2 would turn it into a
+// non-fallback m.in_reply_to and mention the root's author on every thread
+// message, whereas ThreadRoot alone gets the usual fallback reply to the
+// previous thread event, like native Matrix thread messages.
+func threadRootOf(post *mattermost.Post) *networkid.MessageID {
+	if post.RootID == "" {
+		return nil
+	}
+	root := networkid.MessageID(post.RootID)
+	return &root
 }
 
 // resolveFiles returns the FileInfo list from post.Metadata.Files when present,
