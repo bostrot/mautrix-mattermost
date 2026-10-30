@@ -15,7 +15,9 @@ func init() {
 	for code, ch := range kEmoji.CodeMap() {
 		// keys are ":joy:", values are "😂"
 		name := strings.Trim(code, ":")
-		if _, exists := unicodeToName[ch]; !exists {
+		// Map iteration order is random, so pick deterministically: the shortest
+		// alias is the classic shortcode Mattermost knows ("+1", not "thumbs_up").
+		if old, exists := unicodeToName[ch]; !exists || len(name) < len(old) || (len(name) == len(old) && name < old) {
 			unicodeToName[ch] = name
 		}
 	}
@@ -34,6 +36,10 @@ func mmEmojiToUnicode(name string) string {
 // Mattermost shortcode name (e.g. "joy"). Returns ch unchanged if not found.
 func unicodeToMMEmoji(ch string) string {
 	if name, ok := unicodeToName[ch]; ok {
+		return name
+	}
+	// Matrix clients often send "👍️" with a trailing variation selector.
+	if name, ok := unicodeToName[strings.ReplaceAll(ch, "️", "")]; ok {
 		return name
 	}
 	return ch
