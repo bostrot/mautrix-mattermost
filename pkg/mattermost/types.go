@@ -12,6 +12,8 @@ type Post struct {
 	UserID    string        `json:"user_id"`
 	ChannelID string        `json:"channel_id"`
 	RootID    string        `json:"root_id"`  // non-empty when this is a thread reply
+	// ReplyCount is only set on thread root posts and counts the replies in the thread.
+	ReplyCount int          `json:"reply_count"`
 	Message   string        `json:"message"`
 	Type      string        `json:"type"`
 	FileIDs   []string      `json:"file_ids,omitempty"`

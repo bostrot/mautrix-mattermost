@@ -31,10 +31,26 @@ func mediaMsgType(contentType string) event.MessageType {
 	}
 }
 
+// threadRelation returns the Matrix relations for a Mattermost post.
+//
+// Mattermost only has one level of threading: every reply carries root_id
+// pointing at the thread root. That maps to a Matrix thread (ThreadRoot). No
+// ReplyTo is set: bridgev2 builds the thread fallback reply itself from the
+// thread root and previous thread event, which points at the right event even
+// when a later reply in the same thread is the fallback target.
+func threadRelation(post *mattermost.Post) (replyTo *networkid.MessageOptionalPartID, threadRoot *networkid.MessageID) {
+	if post == nil || post.RootID == "" {
+		return nil, nil
+	}
+	root := networkid.MessageID(post.RootID)
+	return nil, &root
+}
+
 // convertPost converts a Mattermost post (text + file attachments) into Matrix message parts.
 // intent is used to upload media to the homeserver; it may be nil (e.g. in unit tests without attachments).
 func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.MatrixAPI, roomID id.RoomID, post *mattermost.Post) (*bridgev2.ConvertedMessage, error) {
 	var parts []*bridgev2.ConvertedMessagePart
+	replyTo, threadRoot := threadRelation(post)
 
 	// Convert file attachments.
 	files := resolveFiles(post)
@@ -94,8 +110,14 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		if fi.Height > 0 {
 			content.Info.Height = fi.Height
 		}
+		// bridgev2 synthesizes missing thread-root event IDs with an empty part ID.
+		// Use that ID for the first attachment; subsequent parts retain their file ID.
+		partID := networkid.PartID("att_" + fi.ID)
+		if len(parts) == 0 {
+			partID = ""
+		}
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			ID:      networkid.PartID("att_" + fi.ID),
+			ID:      partID,
 			Type:    event.EventMessage,
 			Content: content,
 		})
@@ -118,12 +140,9 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			// Text-only message.
 			textContent := format.RenderMarkdown(msgText, true, false)
 			textContent.MsgType = event.MsgText
-			var replyTo *networkid.MessageOptionalPartID
-			if post.RootID != "" {
-				replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-			}
 			cm := &bridgev2.ConvertedMessage{
-				ReplyTo: replyTo,
+				ReplyTo:    replyTo,
+				ThreadRoot: threadRoot,
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					ID:      networkid.PartID(""),
 					Type:    event.EventMessage,
@@ -146,14 +165,10 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		}}
 	}
 
-	var replyTo *networkid.MessageOptionalPartID
-	if post.RootID != "" {
-		replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-	}
-
 	return &bridgev2.ConvertedMessage{
-		ReplyTo: replyTo,
-		Parts:   parts,
+		ReplyTo:    replyTo,
+		ThreadRoot: threadRoot,
+		Parts:      parts,
 	}, nil
 }
 
