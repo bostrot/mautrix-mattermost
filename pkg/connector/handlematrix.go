@@ -23,6 +23,7 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
 		Reply:               event.CapLevelFullySupported,
+		Thread:              event.CapLevelFullySupported,
 		Reaction:            event.CapLevelFullySupported,
 		TypingNotifications: true,
 		File: event.FileFeatureMap{
@@ -34,6 +35,22 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 			event.CapMsgGIF:     &event.FileFeatures{MimeTypes: map[string]event.CapabilitySupportLevel{"image/*": event.CapLevelFullySupported, "video/*": event.CapLevelFullySupported}},
 		},
 	}
+}
+
+// outboundRootID selects the flat Mattermost thread root for a Matrix message.
+func outboundRootID(msg *bridgev2.MatrixMessage) string {
+	if msg == nil {
+		return ""
+	}
+	for _, target := range []*database.Message{msg.ThreadRoot, msg.ReplyTo} {
+		if target != nil {
+			if target.ThreadRoot != "" {
+				return string(target.ThreadRoot)
+			}
+			return string(target.ID)
+		}
+	}
+	return ""
 }
 
 // HandleMatrixMessage bridges a message from Matrix → Mattermost.
@@ -51,10 +68,7 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	channelID := string(msg.Portal.ID)
-	var rootID string
-	if msg.ReplyTo != nil {
-		rootID = string(msg.ReplyTo.ID)
-	}
+	rootID := outboundRootID(msg)
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:

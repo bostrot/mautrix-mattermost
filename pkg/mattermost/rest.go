@@ -120,6 +120,16 @@ func GetPosts(serverURL, token, channelID string, perPage int, beforePostID stri
 	return &pl, nil
 }
 
+// GetPostThread fetches a post and all of its replies (the whole thread).
+// The returned PostList is not guaranteed to be sorted; callers must order by create_at.
+func GetPostThread(serverURL, token, postID string) (*PostList, error) {
+	var pl PostList
+	if err := doGet(serverURL, token, "/api/v4/posts/"+postID+"/thread", &pl); err != nil {
+		return nil, err
+	}
+	return &pl, nil
+}
+
 // GetFileInfo returns metadata for a single file attachment.
 func GetFileInfo(serverURL, token, fileID string) (*FileInfo, error) {
 	var fi FileInfo
