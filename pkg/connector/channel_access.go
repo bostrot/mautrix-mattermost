@@ -126,9 +126,29 @@ func hasArchiveJournal(p *database.Portal) bool {
 	return has
 }
 
-// reconcileUnlistedPortals queues an access sync for every bridged portal the
-// channel listing did not contain. The sync decides from a live probe and is
-// non-destructive: it never deletes a room.
+// routeUnlistedChannel decides what to do with a bridged portal whose channel was
+// missing from the channel listing.
+//
+// A channel that was deleted while the bridge was offline never produced an event
+// the bridge saw, so without this the room would stay forever: the access sync
+// only acts on archived or active channels. When the server answers 404 the
+// channel goes through the same deferred deletion check a channel_deleted event
+// uses. That check probes again when it is dequeued, requires an authenticated
+// and identity-matched canonical 404, and preserves the room otherwise, so this
+// adds no new way to delete a room. Any other answer keeps the previous
+// behaviour: an access sync that never deletes.
+func (c *MattermostClient) routeUnlistedChannel(channelID string) {
+	if c.probeChannel(channelID).State == mattermost.ChannelStateMissing {
+		c.handleChannelDeleted(channelID)
+		return
+	}
+	c.queueAccessSync(channelID)
+}
+
+// reconcileUnlistedPortals checks every bridged portal the channel listing did
+// not contain. Archived channels get an access sync, which is non-destructive;
+// channels the server reports as missing are handed to the deferred deletion
+// check, which makes the actual decision.
 func (c *MattermostClient) reconcileUnlistedPortals(listed map[string]bool) {
 	if c.UserLogin == nil || c.UserLogin.Bridge == nil || c.UserLogin.Bridge.DB == nil {
 		return
@@ -151,7 +171,7 @@ func (c *MattermostClient) reconcileUnlistedPortals(listed map[string]bool) {
 		}
 	}
 	for _, id := range ids {
-		c.queueAccessSync(id)
+		c.routeUnlistedChannel(id)
 	}
 	if len(ids) > 0 {
 		log.Debug().Int("count", len(ids)).Msg("Queued access sync for portals missing from the channel listing")

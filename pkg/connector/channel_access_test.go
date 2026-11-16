@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"testing"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -159,5 +160,62 @@ func TestHasArchiveJournal(t *testing.T) {
 		if got := hasArchiveJournal(tc.p); got != tc.want {
 			t.Errorf("%s: hasArchiveJournal = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A channel deleted while the bridge was offline never produced an event, and the
+// access sync ignores it, so its room used to stay forever. A server 404 must now
+// reach the deferred deletion check; every other answer must not.
+func TestRouteUnlistedChannelByProbeState(t *testing.T) {
+	cases := []struct {
+		name       string
+		probe      func(string) mattermost.ChannelProbe
+		wantChecks int
+		wantAccess int
+	}{
+		{"deleted on the server", authoritativeNotFoundProbe, 1, 0},
+		{"archived", archivedProbe, 0, 1},
+		{"active", activeProbe, 0, 1},
+		{"forbidden is not a deletion", func(string) mattermost.ChannelProbe { return httpProbe(403) }, 0, 1},
+		{"server error is not a deletion", func(string) mattermost.ChannelProbe { return httpProbe(500) }, 0, 1},
+		{"transport error is not a deletion", func(string) mattermost.ChannelProbe { return transportErrProbe() }, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleHarness(t, lifecycleOptions{probe: tc.probe})
+			h.client.routeUnlistedChannel("chan-x")
+			if got := len(h.events.checks()); got != tc.wantChecks {
+				t.Errorf("deletion checks = %d, want %d", got, tc.wantChecks)
+			}
+			if got := len(h.events.accessSyncs()); got != tc.wantAccess {
+				t.Errorf("access syncs = %d, want %d", got, tc.wantAccess)
+			}
+			if got := len(h.events.chatDeletes()); got != 0 {
+				t.Errorf("queued %d delete events at hint time, want none", got)
+			}
+		})
+	}
+}
+
+// End to end through the dequeue-time decision: a 404 that cannot be proven
+// authoritative (here: the token no longer identifies the login) keeps the room.
+func TestRouteUnlistedChannelStillPreservesOnIdentityMismatch(t *testing.T) {
+	h := newLifecycleHarness(t, lifecycleOptions{probe: func(id string) mattermost.ChannelProbe {
+		p := authoritativeNotFoundProbe(id)
+		p.AuthenticatedUserID = "someone-else"
+		return p
+	}})
+	h.client.routeUnlistedChannel("chan-x")
+	for _, ev := range h.events.drain() {
+		if chk, ok := ev.(*mmChannelDeleteCheckEvent); ok {
+			if res := h.client.applyDeferredChannelDelete(context.Background(), h.sink, *chk); res.Applied {
+				t.Fatalf("deleted a room on a 404 that was not identity-matched (reason %q)", res.Reason)
+			} else if res.Reason != "probe-identity-mismatch" {
+				t.Fatalf("reason = %q, want probe-identity-mismatch", res.Reason)
+			}
+		}
+	}
+	if n := h.sink.count(); n != 0 {
+		t.Fatalf("sink received %d deletions, want 0", n)
 	}
 }
