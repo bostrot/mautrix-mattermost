@@ -10,7 +10,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
@@ -103,29 +102,26 @@ func previewServer(t *testing.T, requests *int) *httptest.Server {
 	}))
 }
 
-func TestResolvePermalinkBuildsCard(t *testing.T) {
+func TestResolvePermalinkBuildsQuote(t *testing.T) {
 	var requests int
 	srv := previewServer(t, &requests)
 	defer srv.Close()
 	c := &MattermostClient{Token: "tok", baseURL: srv.URL}
 
-	p := c.resolvePermalink(testPostID)
-	if p == nil {
-		t.Fatal("no preview built")
+	q := c.resolvePermalink(testPostID)
+	if q == nil {
+		t.Fatal("nothing resolved")
 	}
-	if p.Title != "Avery Wagar in Town Square" {
-		t.Errorf("title = %q, want the author and channel", p.Title)
+	if q.Title != "Avery Wagar in Town Square" {
+		t.Errorf("title = %q, want the author and channel", q.Title)
 	}
-	if p.Description != "The backup worked.\n\nLinks to MM messages are pretty slick." {
-		t.Errorf("description = %q, want the whole post with its line breaks", p.Description)
-	}
-	if p.SiteName != "Mattermost" || p.Type != "article" {
-		t.Errorf("site/type = %q/%q", p.SiteName, p.Type)
+	if q.Text != "The backup worked.\n\nLinks to MM messages are pretty slick." {
+		t.Errorf("text = %q, want the whole post with its line breaks", q.Text)
 	}
 
 	before := requests
-	if second := c.resolvePermalink(testPostID); second == nil || second.Title != p.Title {
-		t.Fatal("cached lookup did not return the same card")
+	if again := c.resolvePermalink(testPostID); again == nil || again.Title != q.Title {
+		t.Fatal("cached lookup did not return the same post")
 	}
 	if requests != before {
 		t.Errorf("cache miss: %d extra requests", requests-before)
@@ -138,89 +134,185 @@ func TestResolvePermalinkFailsQuietly(t *testing.T) {
 	defer srv.Close()
 	c := &MattermostClient{Token: "tok", baseURL: srv.URL}
 
-	// A post the server does not have, and one the user cannot read.
-	if p := c.resolvePermalink("zzzzzzzzzzzzzzzzzzzzzzzzzz"); p != nil {
-		t.Errorf("got a preview for a missing post: %+v", p)
+	if q := c.resolvePermalink("zzzzzzzzzzzzzzzzzzzzzzzzzz"); q != nil {
+		t.Errorf("resolved a missing post: %+v", q)
 	}
+	// A failure is cached too: the second lookup makes no request.
+	before := requests
+	c.resolvePermalink("zzzzzzzzzzzzzzzzzzzzzzzzzz")
+	if requests != before {
+		t.Errorf("failed lookup was not cached: %d extra requests", requests-before)
+	}
+
 	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"id":"app.post.get.app_error","status_code":403}`))
 	}))
 	defer forbidden.Close()
-	c.baseURL = forbidden.URL
-	if p := c.resolvePermalink(testPostID); p != nil {
-		t.Errorf("got a preview for a forbidden post: %+v", p)
+	c2 := &MattermostClient{Token: "tok", baseURL: forbidden.URL}
+	if q := c2.resolvePermalink(testPostID); q != nil {
+		t.Errorf("resolved a forbidden post: %+v", q)
 	}
-	// A soft-deleted post yields nothing.
+
 	deleted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(mattermost.Post{ID: testPostID, UserID: "u1", DeleteAt: 12345, Message: "gone"})
 	}))
 	defer deleted.Close()
-	c.baseURL = deleted.URL
-	if p := c.resolvePermalink(testPostID); p != nil {
-		t.Errorf("built a preview for a deleted post: %+v", p)
+	c3 := &MattermostClient{Token: "tok", baseURL: deleted.URL}
+	if q := c3.resolvePermalink(testPostID); q != nil {
+		t.Errorf("resolved a deleted post: %+v", q)
 	}
 
-	// No token at all: nothing is attempted and nothing panics.
-	noTok := &MattermostClient{}
-	if p := noTok.resolvePermalink(testPostID); p != nil {
-		t.Errorf("built a preview without a token: %+v", p)
+	if q := (&MattermostClient{}).resolvePermalink(testPostID); q != nil {
+		t.Errorf("resolved without a token: %+v", q)
 	}
 }
 
-func TestAttachPermalinkPreviewsMatchesURL(t *testing.T) {
+func TestAttachPermalinkQuotes(t *testing.T) {
 	var requests int
 	srv := previewServer(t, &requests)
 	defer srv.Close()
 	c := &MattermostClient{Token: "tok", baseURL: srv.URL}
 
-	// The permalink host must be the bridge's own server, as it is in production.
 	url := srv.URL + "/fpl/pl/" + testPostID
 	content := &event.MessageEventContent{MsgType: event.MsgText, Body: "look: " + url}
-	c.attachPermalinkPreviews(context.Background(), content, "look: "+url)
-	if len(content.BeeperLinkPreviews) != 1 {
-		t.Fatalf("attached %d previews, want 1", len(content.BeeperLinkPreviews))
+	c.attachPermalinkQuotes(context.Background(), content, content.Body)
+
+	if len(content.BeeperLinkPreviews) != 0 {
+		t.Errorf("attached %d preview cards; the quote replaces the card", len(content.BeeperLinkPreviews))
 	}
-	if got := content.BeeperLinkPreviews[0].MatchedURL; got != url {
-		t.Errorf("MatchedURL = %q, want the link exactly as written", got)
+	wantPlain := "look: " + url + "\n\n> Avery Wagar in Town Square\n> The backup worked.\n> \n> Links to MM messages are pretty slick."
+	if content.Body != wantPlain {
+		t.Errorf("body =\n%q\nwant\n%q", content.Body, wantPlain)
 	}
-	// A cancelled context attaches nothing.
+	if content.Format != event.FormatHTML {
+		t.Errorf("format = %q, want HTML", content.Format)
+	}
+	for _, want := range []string{
+		"look: " + url, // the original message comes first
+		"<blockquote>",
+		`<a href="` + url + `"><strong>Avery Wagar in Town Square</strong></a>`,
+		"The backup worked.",
+		"Links to MM messages are pretty slick.",
+		"</blockquote>",
+	} {
+		if !strings.Contains(content.FormattedBody, want) {
+			t.Errorf("HTML body missing %q:\n%s", want, content.FormattedBody)
+		}
+	}
+	if !strings.HasPrefix(content.FormattedBody, "look: ") {
+		t.Errorf("HTML body does not start with the original message: %q", content.FormattedBody)
+	}
+
+	// A cancelled context leaves the message untouched.
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	other := &event.MessageEventContent{}
-	c.attachPermalinkPreviews(cancelled, other, url)
-	if len(other.BeeperLinkPreviews) != 0 {
-		t.Error("attached previews with a cancelled context")
+	other := &event.MessageEventContent{Body: url}
+	c.attachPermalinkQuotes(cancelled, other, url)
+	if other.Body != url || other.FormattedBody != "" {
+		t.Error("changed the message with a cancelled context")
+	}
+	// A link that does not resolve leaves the message untouched.
+	dead := &event.MessageEventContent{Body: srv.URL + "/fpl/pl/zzzzzzzzzzzzzzzzzzzzzzzzzz"}
+	c.attachPermalinkQuotes(context.Background(), dead, dead.Body)
+	if dead.FormattedBody != "" || strings.Contains(dead.Body, ">") {
+		t.Errorf("changed a message whose link did not resolve: %+v", dead)
 	}
 }
 
-// The integration point: a text message with a permalink must reach the part
-// that becomes the Matrix event, with the preview attached.
-func TestConvertPostAttachesPermalinkPreview(t *testing.T) {
+func TestAttachPermalinkQuotesRendersMarkdownAndEscapes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v4/posts/" + testPostID:
+			_ = json.NewEncoder(w).Encode(mattermost.Post{ID: testPostID, UserID: "u1",
+				Message: "**Nightly backup OK**\n- Archive: `mm.tar`\n<script>x</script>"})
+		case "/api/v4/users/u1":
+			_ = json.NewEncoder(w).Encode(mattermost.User{ID: "u1", FirstName: "A <b>", LastName: "&"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	c := &MattermostClient{Token: "tok", baseURL: srv.URL}
+	url := srv.URL + "/fpl/pl/" + testPostID
+	// An existing HTML body is kept and the quote is appended to it.
+	content := &event.MessageEventContent{Body: url, Format: event.FormatHTML, FormattedBody: "<em>see</em> " + url}
+	c.attachPermalinkQuotes(context.Background(), content, url)
+
+	if !strings.HasPrefix(content.FormattedBody, "<em>see</em> ") {
+		t.Errorf("existing HTML body was replaced: %q", content.FormattedBody)
+	}
+	for _, want := range []string{"<strong>Nightly backup OK</strong>", "<code>mm.tar</code>", "A &lt;b&gt; &amp;"} {
+		if !strings.Contains(content.FormattedBody, want) {
+			t.Errorf("HTML body missing %q:\n%s", want, content.FormattedBody)
+		}
+	}
+	if strings.Contains(content.FormattedBody, "<script>") || strings.Contains(content.FormattedBody, "<b>") {
+		t.Errorf("unescaped HTML from the post or the name reached the body:\n%s", content.FormattedBody)
+	}
+}
+
+func TestAttachPermalinkQuotesBudget(t *testing.T) {
+	long := strings.Repeat("é", maxQuotedBytes) // 2 bytes each: twice the budget
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		id := strings.TrimPrefix(r.URL.Path, "/api/v4/posts/")
+		if len(id) != 26 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(mattermost.Post{ID: id, Message: long})
+	}))
+	defer srv.Close()
+	c := &MattermostClient{Token: "tok", baseURL: srv.URL}
+	text := srv.URL + "/fpl/pl/aaaaaaaaaaaaaaaaaaaaaaaaaa " + srv.URL + "/fpl/pl/bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	content := &event.MessageEventContent{Body: text}
+	c.attachPermalinkQuotes(context.Background(), content, text)
+
+	added := len(content.Body) - len(text)
+	// Two titles, quote markers and ellipses on top of the budget, nothing more.
+	if added > maxQuotedBytes+200 {
+		t.Errorf("quotes added %d bytes, budget is %d", added, maxQuotedBytes)
+	}
+	if !utf8.ValidString(content.Body) || !utf8.ValidString(content.FormattedBody) {
+		t.Error("a quote was cut in the middle of a UTF-8 sequence")
+	}
+	if !strings.Contains(content.Body, "…") {
+		t.Error("an over-budget post was not marked as shortened")
+	}
+}
+
+// The integration points: new messages and edits both carry the quote.
+func TestConvertPostAndEditQuotePermalink(t *testing.T) {
 	var requests int
 	srv := previewServer(t, &requests)
 	defer srv.Close()
 	url := srv.URL + "/fpl/pl/" + testPostID
 	c := &MattermostClient{Token: "tok", baseURL: srv.URL, UserID: "me"}
-	post := &mattermost.Post{ID: "p1", UserID: "u2", ChannelID: "c1", Message: url}
 
-	cm, err := c.convertPost(context.Background(), nil, "!room:test", post)
+	cm, err := c.convertPost(context.Background(), nil, "!room:test", &mattermost.Post{ID: "p1", UserID: "u2", ChannelID: "c1", Message: url})
 	if err != nil || cm == nil || len(cm.Parts) == 0 {
 		t.Fatalf("convertPost = %v, %v", cm, err)
 	}
-	if len(cm.Parts[0].Content.BeeperLinkPreviews) != 1 {
-		t.Fatalf("parts carry %d previews, want 1", len(cm.Parts[0].Content.BeeperLinkPreviews))
+	if !strings.Contains(cm.Parts[0].Content.FormattedBody, "<blockquote>") {
+		t.Fatalf("converted message has no quote: %q", cm.Parts[0].Content.FormattedBody)
 	}
-	// A message without a permalink is untouched.
+	if len(cm.Parts[0].Content.BeeperLinkPreviews) != 0 {
+		t.Error("converted message still carries a preview card")
+	}
+	edited := c.editContent(context.Background(), &mattermost.Post{ID: "p1", Message: "edited: " + url})
+	if !strings.HasPrefix(edited.Body, "edited: ") || !strings.Contains(edited.FormattedBody, "<blockquote>") {
+		t.Errorf("an edit dropped the quote: %+v", edited)
+	}
 	plain, _ := c.convertPost(context.Background(), nil, "!room:test", &mattermost.Post{ID: "p2", Message: "no links here"})
-	if len(plain.Parts[0].Content.BeeperLinkPreviews) != 0 {
-		t.Error("attached a preview to a message with no permalink")
+	if strings.Contains(plain.Parts[0].Content.FormattedBody, "<blockquote>") {
+		t.Error("quoted something in a message with no permalink")
 	}
 }
 
-func TestPreviewExcerpt(t *testing.T) {
-	// A real multi-line post is kept whole, line breaks included.
+func TestNormalizePostText(t *testing.T) {
 	post := "✅ **Nightly backup OK** — 2026-11-16 03:43 PST\r\n" +
 		"- Archive: `mm-20261116T114242Z.tar` (584.3 MiB), checksum verified\n" +
 		"- VM copy: removed   \n\n\n\n" +
@@ -229,23 +321,27 @@ func TestPreviewExcerpt(t *testing.T) {
 		"- Archive: `mm-20261116T114242Z.tar` (584.3 MiB), checksum verified\n" +
 		"- VM copy: removed\n\n" +
 		"- Backups on TrueNAS: 3 · oldest 2026-11-14"
-	if got := previewExcerpt(post); got != want {
-		t.Errorf("excerpt =\n%q\nwant\n%q", got, want)
+	if got := normalizePostText(post); got != want {
+		t.Errorf("normalized =\n%q\nwant\n%q", got, want)
 	}
-	// Well past the old 200-character card: still whole.
 	medium := strings.Repeat("word ", 800)
-	if got := previewExcerpt(medium); got != strings.TrimSpace(medium) {
+	if got := normalizePostText(medium); got != strings.TrimSpace(medium) {
 		t.Errorf("a %d-byte post was shortened to %d bytes", len(medium), len(got))
-	}
-	// Only a post over the safety bound is cut, on a UTF-8 boundary.
-	huge := strings.Repeat("é", maxPreviewDescription)
-	got := previewExcerpt(huge)
-	if !strings.HasSuffix(got, "…") || len(got) > maxPreviewDescription+len("…") {
-		t.Errorf("oversized post not bounded: %d bytes", len(got))
-	}
-	if !utf8.ValidString(got) {
-		t.Error("cut in the middle of a UTF-8 sequence")
 	}
 }
 
-var _ = bridgev2.ConvertedMessage{}
+func TestTruncateUTF8(t *testing.T) {
+	text := "aé€😀z" // 1, 2, 3, 4 and 1 bytes
+	for limit := 0; limit <= len(text)+1; limit++ {
+		got := truncateUTF8(text, limit)
+		if !utf8.ValidString(got) {
+			t.Errorf("limit %d: invalid UTF-8 %q", limit, got)
+		}
+		if limit >= len(text) && got != text {
+			t.Errorf("limit %d: shortened a text that fits: %q", limit, got)
+		}
+		if limit < len(text) && (!strings.HasSuffix(got, "…") || len(strings.TrimSuffix(got, "…")) > limit) {
+			t.Errorf("limit %d: %q is over the limit or unmarked", limit, got)
+		}
+	}
+}
