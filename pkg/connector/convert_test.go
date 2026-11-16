@@ -84,11 +84,11 @@ func TestConvertPost_WithThreadReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cm.ReplyTo == nil {
-		t.Fatal("expected ReplyTo to be set for thread reply")
+	if cm.ThreadRoot == nil || *cm.ThreadRoot != networkid.MessageID("rootPostID") {
+		t.Fatalf("expected ThreadRoot rootPostID, got: %v", cm.ThreadRoot)
 	}
-	if cm.ReplyTo.MessageID != networkid.MessageID("rootPostID") {
-		t.Fatalf("unexpected ReplyTo ID: %v", cm.ReplyTo.MessageID)
+	if cm.ReplyTo != nil {
+		t.Fatalf("expected nil ReplyTo for thread reply, got: %+v", cm.ReplyTo)
 	}
 }
 
@@ -100,8 +100,8 @@ func TestConvertPost_NoReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cm.ReplyTo != nil {
-		t.Fatalf("expected nil ReplyTo, got: %+v", cm.ReplyTo)
+	if cm.ReplyTo != nil || cm.ThreadRoot != nil {
+		t.Fatalf("expected no relation, got ReplyTo=%+v ThreadRoot=%v", cm.ReplyTo, cm.ThreadRoot)
 	}
 }
 
