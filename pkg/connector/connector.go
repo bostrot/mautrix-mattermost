@@ -45,6 +45,7 @@ func (m *MattermostConnector) GetName() bridgev2.BridgeName {
 
 func (m *MattermostConnector) GetDBMetaTypes() database.MetaTypes {
 	return database.MetaTypes{
+		Portal: func() any { return &PortalMetadata{} },
 		UserLogin: func() any {
 			return &UserLoginMetadata{}
 		},

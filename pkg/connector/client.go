@@ -35,6 +35,35 @@ type MattermostClient struct {
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
 	done     chan struct{}                  // closed by Disconnect to stop reconnect loop
+
+	// probeChannelFn overrides the channel lifecycle probe in tests. When nil,
+	// mattermost.ProbeChannel is used.
+	probeChannelFn func(serverURL, token, channelID string) mattermost.ChannelProbe
+	// listChannelStatesFn and reconnectFn override the lifecycle poller's
+	// server listing and websocket reconnect in tests.
+	listChannelStatesFn func() (map[string]*mattermost.Channel, bool)
+	reconnectFn         func()
+	// queueRemoteEventFn overrides event delivery in tests. When nil, events go
+	// to UserLogin.QueueRemoteEvent. The returned result is the framework's
+	// answer (Queued, Ignored or Failed) and is used to decide whether a
+	// deferred check will ever run.
+	queueRemoteEventFn func(bridgev2.RemoteEvent) bridgev2.EventHandlingResult
+
+	// lifecycleMu guards channelGen/deletedChannels/pendingChecks and makes the
+	// generation check + deletion commit atomic with respect to restores.
+	// It is separate from mu so holding it across queueEvent cannot deadlock
+	// with the channel cache lock.
+	lifecycleMu sync.Mutex
+	// channelGen orders lifecycle events per channel: a newer create/update/
+	// delete/restore invalidates checks and probes started for older events.
+	channelGen map[string]uint64
+	// pendingChecks records channels with a queued (not yet dequeued) deletion
+	// check, so a burst of channel_deleted hints cannot queue more than one
+	// bounded probe per channel and generation.
+	pendingChecks map[string]bool
+	// deletedChannels records portals whose deletion was committed in this
+	// process, so a duplicate hint cannot delete twice.
+	deletedChannels map[string]bool
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -136,7 +165,7 @@ func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
 		OtherUserID: otherUserID,
 	}
 
-	c.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+	c.queueEvent(&simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
 			CreatePortal: true,
@@ -162,12 +191,15 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 	}
 	c.done = make(chan struct{})
 	go c.connectLoop()
+	go c.lifecyclePollLoop()
 }
 
 func (c *MattermostClient) connectLoop() {
 	backoff := 5 * time.Second
 	for {
 		cl := mattermost.NewClient(c.serverURL(), c.Token)
+		wsLog := c.lifecycleLogger()
+		cl.Logf = func(format string, args ...any) { wsLog.Debug().Msgf(format, args...) }
 		if err := cl.Connect(); err != nil {
 			c.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateUnknownError,
@@ -204,6 +236,10 @@ func (c *MattermostClient) connectLoop() {
 
 func (c *MattermostClient) processEvents() {
 	for raw := range c.client.Events {
+		// Debug visibility: without this the connector is silent between the
+		// websocket and the portal queue, which hides dropped lifecycle events.
+		lg := c.lifecycleLogger()
+		lg.Debug().Str("mm_event", fmt.Sprintf("%T", raw)).Msg("Mattermost event received")
 		switch evt := raw.(type) {
 		case *mattermost.HelloEvent:
 			// When connected, load all channels and queue resyncs.
@@ -215,6 +251,15 @@ func (c *MattermostClient) processEvents() {
 		case *mattermost.PostedEvent:
 			if evt.Post == nil {
 				continue
+			}
+			// Restores arrive as a system post; treat it as proof the channel is
+			// alive again so a pending (or already applied) deletion is undone.
+			if evt.Post.Type == "system_channel_restored" {
+				c.noteChannelAlive(evt.ChannelID)
+				// Backstop for a missed channel_restored event: the room must be
+				// writable before the notice below is relayed. Queued first, so
+				// the portal lane applies it before the notice.
+				c.queueAccessSync(evt.ChannelID)
 			}
 			// Pre-seed the channel cache from the inline WS metadata so that
 			// GetChatInfo never races against a concurrent REST fetch.
@@ -240,7 +285,7 @@ func (c *MattermostClient) processEvents() {
 			if isFromMe {
 				sender.SenderLogin = c.UserLogin.ID
 			}
-			c.UserLogin.QueueRemoteEvent(&simplevent.Message[*mattermost.Post]{
+			c.queueEvent(&simplevent.Message[*mattermost.Post]{
 				EventMeta: simplevent.EventMeta{
 					Type:         bridgev2.RemoteEventMessage,
 					CreatePortal: true,
@@ -268,7 +313,7 @@ func (c *MattermostClient) processEvents() {
 			if isFromMe {
 				editSender.SenderLogin = c.UserLogin.ID
 			}
-			c.UserLogin.QueueRemoteEvent(&simplevent.Message[*mattermost.Post]{
+			c.queueEvent(&simplevent.Message[*mattermost.Post]{
 				EventMeta: simplevent.EventMeta{
 					Type:       bridgev2.RemoteEventEdit,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
@@ -300,7 +345,7 @@ func (c *MattermostClient) processEvents() {
 			if evt.Post == nil {
 				continue
 			}
-			c.UserLogin.QueueRemoteEvent(&simplevent.MessageRemove{
+			c.queueEvent(&simplevent.MessageRemove{
 				EventMeta: simplevent.EventMeta{
 					Type:       bridgev2.RemoteEventMessageRemove,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
@@ -315,7 +360,7 @@ func (c *MattermostClient) processEvents() {
 			if !evt.IsAdd {
 				evtType = bridgev2.RemoteEventReactionRemove
 			}
-			c.UserLogin.QueueRemoteEvent(&simplevent.Reaction{
+			c.queueEvent(&simplevent.Reaction{
 				EventMeta: simplevent.EventMeta{
 					Type:       evtType,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
@@ -332,14 +377,14 @@ func (c *MattermostClient) processEvents() {
 				continue // don't echo own typing
 			}
 			portalKey := networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID}
-			c.UserLogin.QueueRemoteEvent(&mmTypingEvent{
+			c.queueEvent(&mmTypingEvent{
 				channelID: networkid.PortalID(evt.ChannelID),
 				receiver:  c.UserLogin.ID,
 				senderID:  evt.UserID,
 			})
 			// Mark portal as read on behalf of the logged-in user when
 			// someone else starts typing — they're clearly looking at it.
-			c.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
+			c.queueEvent(&simplevent.Receipt{
 				EventMeta: simplevent.EventMeta{
 					Type:       bridgev2.RemoteEventReadReceipt,
 					PortalKey:  portalKey,
@@ -359,6 +404,9 @@ func (c *MattermostClient) processEvents() {
 			}
 			c.channels[evt.Channel.ID] = evt.Channel
 			c.mu.Unlock()
+			// A (re)created channel supersedes any pending deletion verdict and
+			// must be bridgeable again even if its portal was deleted before.
+			c.noteChannelAlive(evt.Channel.ID)
 			c.queueChannelResync(evt.Channel)
 
 		case *mattermost.ChannelUpdatedEvent:
@@ -371,7 +419,9 @@ func (c *MattermostClient) processEvents() {
 			}
 			c.mu.Unlock()
 			newName := evt.Channel.DisplayName
-			c.UserLogin.QueueRemoteEvent(&simplevent.ChatInfoChange{
+			// Updates can arrive out of order. Only an explicit restoration or
+			// fresh provider state supersedes a pending deletion check.
+			c.queueEvent(&simplevent.ChatInfoChange{
 				EventMeta: simplevent.EventMeta{
 					Type:       bridgev2.RemoteEventChatInfoChange,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.Channel.ID), Receiver: c.UserLogin.ID},
@@ -382,15 +432,27 @@ func (c *MattermostClient) processEvents() {
 				},
 			})
 
+		case *mattermost.ChannelRestoredEvent:
+			// Invalidate pending removal checks. The corresponding Mattermost
+			// system post supplies the user-visible message exactly once.
+			c.noteChannelAlive(evt.ChannelID)
+			// Make the room writable again. Queued here, ahead of the restore
+			// post that follows, so the "unarchived" notice (sent from the
+			// user's own account) is not blocked by the read-only levels.
+			c.queueAccessSync(evt.ChannelID)
+
 		case *mattermost.ChannelDeletedEvent:
 			c.mu.Lock()
 			if c.channels != nil {
 				delete(c.channels, evt.ChannelID)
 			}
 			c.mu.Unlock()
-			c.UserLogin.QueueRemoteEvent(&mmChatDeleteEvent{
-				portalKey: networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
-			})
+			// The event alone does not prove the channel is gone: Mattermost
+			// sends it for restorable archives too. Verify over REST first and
+			// fail closed on any ambiguous answer.
+			c.handleChannelDeleted(evt.ChannelID)
+			// If it is only archived, the room stays but becomes read-only.
+			c.queueAccessSync(evt.ChannelID)
 
 		case *mattermost.DirectAddedEvent:
 			// A new DM was opened. Fetch channel info and queue a resync.
@@ -445,10 +507,12 @@ func (c *MattermostClient) syncChannels() {
 	}
 
 	seenChannels := make(map[string]bool)
+	listingComplete := true
 
 	for _, team := range teams {
 		channels, err := mattermost.GetChannelsForUser(c.serverURL(), c.Token, c.UserID, team.ID)
 		if err != nil {
+			listingComplete = false
 			continue
 		}
 
@@ -467,7 +531,16 @@ func (c *MattermostClient) syncChannels() {
 			}
 			seenChannels[ch.ID] = true
 			c.queueChannelResync(ch)
+			c.queueAccessSync(ch.ID)
 		}
+	}
+
+	// Mattermost's channel listing omits archived channels, so their rooms are
+	// never resynced above. Sync their access (read-only) from the live state
+	// instead. Skipped when any team failed to list: an incomplete listing
+	// must not be mistaken for "these channels are archived".
+	if listingComplete {
+		c.reconcileUnlistedPortals(seenChannels)
 	}
 }
 
@@ -551,7 +624,7 @@ func (c *MattermostClient) resolveDisplayName(userID string) string {
 
 // sendNotice queues a notice m.text event into a channel portal.
 func (c *MattermostClient) sendNotice(channelID networkid.PortalID, body string) {
-	c.UserLogin.QueueRemoteEvent(&simplevent.Message[string]{
+	c.queueEvent(&simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventMessage,
 			CreatePortal: false,
