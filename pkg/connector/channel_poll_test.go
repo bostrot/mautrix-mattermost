@@ -230,3 +230,32 @@ func TestPollCoalescesReconnectsAcrossRestores(t *testing.T) {
 		t.Errorf("access syncs = %d, want one per restored channel (3)", n)
 	}
 }
+
+// A reconnect the connector asked for must not flash "disconnected" in the
+// client; a real drop, including one right after, still must.
+func TestDeliberateReconnectIsNotReportedAsDisconnect(t *testing.T) {
+	t.Run("an unplanned close is reported", func(t *testing.T) {
+		c := &MattermostClient{}
+		st, report := c.disconnectState()
+		if !report || st.Error != "mm-disconnected" {
+			t.Fatalf("report=%v state=%+v, want the mm-disconnected error state", report, st)
+		}
+	})
+	t.Run("a deliberate close is not reported, once", func(t *testing.T) {
+		c := &MattermostClient{reconnectFn: func() {}}
+		c.reconnectWebsocket()
+		if _, report := c.disconnectState(); report {
+			t.Fatal("reported a disconnect for a reconnect the connector asked for")
+		}
+		if _, report := c.disconnectState(); !report {
+			t.Fatal("the deliberate-reconnect mark was not consumed: the next real drop would be hidden")
+		}
+	})
+	t.Run("nothing to replace marks nothing", func(t *testing.T) {
+		c := &MattermostClient{} // no websocket, no test hook
+		c.reconnectWebsocket()
+		if _, report := c.disconnectState(); !report {
+			t.Fatal("marked a close that cannot happen, which would hide the next real drop")
+		}
+	})
+}

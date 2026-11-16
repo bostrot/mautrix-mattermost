@@ -124,16 +124,19 @@ func (c *MattermostClient) listChannels() (map[string]*mattermost.Channel, bool)
 // one. A new connection gets a fresh membership snapshot, and its Hello triggers
 // a full resync that backfills whatever the old connection missed.
 func (c *MattermostClient) reconnectWebsocket() {
+	c.mu.RLock()
+	cl := c.client
+	c.mu.RUnlock()
+	if cl == nil && c.reconnectFn == nil {
+		return // no connection to replace; do not mark a close that will not happen
+	}
+	// This close is deliberate: do not report it as a disconnect.
+	c.quietReconnect.Store(true)
 	if c.reconnectFn != nil {
 		c.reconnectFn()
 		return
 	}
-	c.mu.RLock()
-	cl := c.client
-	c.mu.RUnlock()
-	if cl != nil {
-		cl.Close()
-	}
+	cl.Close()
 }
 
 // applyLifecycleTransition reacts to one observed change. ch is the channel as

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -43,6 +44,9 @@ type MattermostClient struct {
 	// server listing and websocket reconnect in tests.
 	listChannelStatesFn func() (map[string]*mattermost.Channel, bool)
 	reconnectFn         func()
+	// quietReconnect marks the next websocket close as deliberate (see
+	// reconnectWebsocket), so it is not reported as a disconnect.
+	quietReconnect atomic.Bool
 	// queueRemoteEventFn overrides event delivery in tests. When nil, events go
 	// to UserLogin.QueueRemoteEvent. The returned result is the framework's
 	// answer (Queued, Ignored or Failed) and is used to decide whether a
@@ -210,6 +214,9 @@ func (c *MattermostClient) connectLoop() {
 			c.mu.Lock()
 			c.client = cl
 			c.mu.Unlock()
+			// A new connection is up: a deliberate-reconnect mark that was never
+			// consumed must not swallow the report of a later, real drop.
+			c.quietReconnect.Store(false)
 			c.processEvents() // blocks until WS closes
 			backoff = 5 * time.Second
 		}
@@ -492,11 +499,25 @@ func (c *MattermostClient) processEvents() {
 	}
 
 	// Events channel closed — WebSocket disconnected.
-	c.UserLogin.BridgeState.Send(status.BridgeState{
+	if state, report := c.disconnectState(); report {
+		c.UserLogin.BridgeState.Send(state)
+	}
+}
+
+// disconnectState is the bridge state to report when the websocket closes. A
+// close the connector asked for (reconnectWebsocket) reports nothing: the new
+// connection announces "connected" within seconds, and an error state in between
+// only shows up as a flicker. The mark is consumed, so a real drop that follows
+// is reported as usual.
+func (c *MattermostClient) disconnectState() (status.BridgeState, bool) {
+	if c.quietReconnect.Swap(false) {
+		return status.BridgeState{}, false
+	}
+	return status.BridgeState{
 		StateEvent: status.StateUnknownError,
 		Error:      "mm-disconnected",
 		Message:    "WebSocket connection closed",
-	})
+	}, true
 }
 
 // syncChannels fetches all teams + channels for the user and queues ChatResync events.
