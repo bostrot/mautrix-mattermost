@@ -35,6 +35,11 @@ type MattermostClient struct {
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
 	done     chan struct{}                  // closed by Disconnect to stop reconnect loop
+
+	// previews caches resolved Mattermost permalink cards. A message must never
+	// fail because a preview could not be built, so failures are cached too.
+	previewMu sync.Mutex
+	previews  map[string]cachedPreview
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
