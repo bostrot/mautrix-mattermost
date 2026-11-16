@@ -67,6 +67,7 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 			Sender:           sender,
 			ID:               networkid.MessageID(post.ID),
 			Timestamp:        ts,
+			Reactions:        c.backfillReactions(post),
 		})
 	}
 
@@ -88,4 +89,54 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 		HasMore:  hasMore,
 		MarkRead: params.Forward || allFromMe,
 	}, nil
+}
+
+// backfillReactions converts the reactions Mattermost returns in a post's
+// metadata into backfill reactions, so history that is bridged after the fact
+// carries the reactions it had. Live reactions arrive as websocket events and
+// take a different path; this only covers what is already on a post when it is
+// backfilled.
+//
+// Removed reactions, entries without a user or emoji, and repeats of the same
+// user and emoji are dropped. The emoji is converted exactly as for live
+// reactions, and the sender is built the same way as for the message itself.
+func (c *MattermostClient) backfillReactions(post *mattermost.Post) []*bridgev2.BackfillReaction {
+	if post == nil || post.Metadata == nil || len(post.Metadata.Reactions) == 0 {
+		return nil
+	}
+	type reactionKey struct{ user, emoji string }
+	seen := make(map[reactionKey]bool, len(post.Metadata.Reactions))
+	out := make([]*bridgev2.BackfillReaction, 0, len(post.Metadata.Reactions))
+	for _, r := range post.Metadata.Reactions {
+		if r == nil || r.UserID == "" || r.EmojiName == "" || r.DeleteAt != 0 {
+			continue
+		}
+		key := reactionKey{r.UserID, r.EmojiName}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		sender := bridgev2.EventSender{Sender: networkid.UserID(r.UserID)}
+		if c.UserID != "" && r.UserID == c.UserID {
+			sender.IsFromMe = true
+			if c.UserLogin != nil {
+				sender.SenderLogin = c.UserLogin.ID
+			}
+		}
+		var ts time.Time // zero: bridgev2 places it just after the message
+		if r.CreateAt > 0 {
+			ts = time.UnixMilli(r.CreateAt)
+		}
+		out = append(out, &bridgev2.BackfillReaction{
+			Sender:    sender,
+			EmojiID:   networkid.EmojiID(r.EmojiName),
+			Emoji:     mmEmojiToUnicode(r.EmojiName),
+			Timestamp: ts,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

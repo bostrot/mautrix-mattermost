@@ -101,6 +101,8 @@ type Reaction struct {
 	PostID    string `json:"post_id"`
 	EmojiName string `json:"emoji_name"`
 	CreateAt  int64  `json:"create_at"`
+	// DeleteAt is non-zero for a removed reaction. Posts normally omit those.
+	DeleteAt int64 `json:"delete_at,omitempty"`
 }
 
 // PostList is the response from the paginated posts endpoint.
