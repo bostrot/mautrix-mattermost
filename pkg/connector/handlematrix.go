@@ -23,6 +23,7 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
 		Reply:               event.CapLevelFullySupported,
+		Thread:              event.CapLevelFullySupported,
 		Reaction:            event.CapLevelFullySupported,
 		TypingNotifications: true,
 		File: event.FileFeatureMap{
@@ -51,8 +52,15 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	channelID := string(msg.Portal.ID)
+	// Mattermost only has one relation (RootID, which always points at the
+	// thread root), so a Matrix thread reply must take priority over a plain
+	// reply-quote here: without this, replying inside a Beeper/Matrix thread
+	// (which populates ThreadRoot, not ReplyTo) would fall through with an
+	// empty rootID and post to the main channel instead of into the thread.
 	var rootID string
-	if msg.ReplyTo != nil {
+	if msg.ThreadRoot != nil {
+		rootID = string(msg.ThreadRoot.ID)
+	} else if msg.ReplyTo != nil {
 		rootID = string(msg.ReplyTo.ID)
 	}
 

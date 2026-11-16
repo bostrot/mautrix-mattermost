@@ -34,6 +34,14 @@ func TestGetCapabilities_Reply(t *testing.T) {
 	}
 }
 
+func TestGetCapabilities_Thread(t *testing.T) {
+	c := &MattermostClient{}
+	caps := c.GetCapabilities(nil, makePortal("ch1"))
+	if caps.Thread != event.CapLevelFullySupported {
+		t.Errorf("Thread capability = %v, want FullySupported", caps.Thread)
+	}
+}
+
 func TestGetCapabilities_Reaction(t *testing.T) {
 	c := &MattermostClient{}
 	caps := c.GetCapabilities(nil, makePortal("ch1"))
