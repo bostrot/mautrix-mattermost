@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
@@ -115,8 +116,8 @@ func TestResolvePermalinkBuildsCard(t *testing.T) {
 	if p.Title != "Avery Wagar in Town Square" {
 		t.Errorf("title = %q, want the author and channel", p.Title)
 	}
-	if !strings.Contains(p.Description, "The backup worked.") || strings.Contains(p.Description, "\n") {
-		t.Errorf("description = %q, want the message flattened onto one line", p.Description)
+	if p.Description != "The backup worked.\n\nLinks to MM messages are pretty slick." {
+		t.Errorf("description = %q, want the whole post with its line breaks", p.Description)
 	}
 	if p.SiteName != "Mattermost" || p.Type != "article" {
 		t.Errorf("site/type = %q/%q", p.SiteName, p.Type)
@@ -219,13 +220,31 @@ func TestConvertPostAttachesPermalinkPreview(t *testing.T) {
 }
 
 func TestPreviewExcerpt(t *testing.T) {
-	if got := previewExcerpt("short\nmessage"); got != "short message" {
-		t.Errorf("excerpt = %q", got)
+	// A real multi-line post is kept whole, line breaks included.
+	post := "✅ **Nightly backup OK** — 2026-11-16 03:43 PST\r\n" +
+		"- Archive: `mm-20261116T114242Z.tar` (584.3 MiB), checksum verified\n" +
+		"- VM copy: removed   \n\n\n\n" +
+		"- Backups on TrueNAS: 3 · oldest 2026-11-14"
+	want := "✅ **Nightly backup OK** — 2026-11-16 03:43 PST\n" +
+		"- Archive: `mm-20261116T114242Z.tar` (584.3 MiB), checksum verified\n" +
+		"- VM copy: removed\n\n" +
+		"- Backups on TrueNAS: 3 · oldest 2026-11-14"
+	if got := previewExcerpt(post); got != want {
+		t.Errorf("excerpt =\n%q\nwant\n%q", got, want)
 	}
-	long := strings.Repeat("a", maxPreviewDescription+50)
-	got := previewExcerpt(long)
-	if !strings.HasSuffix(got, "…") || len([]rune(got)) > maxPreviewDescription+1 {
-		t.Errorf("long excerpt not trimmed: %d runes", len([]rune(got)))
+	// Well past the old 200-character card: still whole.
+	medium := strings.Repeat("word ", 800)
+	if got := previewExcerpt(medium); got != strings.TrimSpace(medium) {
+		t.Errorf("a %d-byte post was shortened to %d bytes", len(medium), len(got))
+	}
+	// Only a post over the safety bound is cut, on a UTF-8 boundary.
+	huge := strings.Repeat("é", maxPreviewDescription)
+	got := previewExcerpt(huge)
+	if !strings.HasSuffix(got, "…") || len(got) > maxPreviewDescription+len("…") {
+		t.Errorf("oversized post not bounded: %d bytes", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Error("cut in the middle of a UTF-8 sequence")
 	}
 }
 

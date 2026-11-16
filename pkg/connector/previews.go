@@ -19,8 +19,12 @@ import (
 const (
 	// maxPreviewsPerMessage bounds the work done for one message.
 	maxPreviewsPerMessage = 3
-	// maxPreviewDescription is a display limit, not a Mattermost limit.
-	maxPreviewDescription = 200
+	// maxPreviewDescription is a safety bound in bytes, not a display limit:
+	// clients decide how much of a card to show. Matrix events are capped at
+	// 64 KiB, and a Mattermost post can be up to 16,383 characters (about
+	// 64 KiB of UTF-8 at worst), so a full post could not always fit next to
+	// the message itself. 16 KiB holds any ordinary post in full.
+	maxPreviewDescription = 16 * 1024
 	// previewCacheTTL keeps repeated permalinks (and backfill) from re-fetching.
 	previewCacheTTL = 10 * time.Minute
 )
@@ -183,18 +187,37 @@ func (c *MattermostClient) resolvePermalink(postID string) *event.BeeperLinkPrev
 	return preview
 }
 
-// previewExcerpt is the opening of a post, on one line.
+// previewExcerpt is the post's text for the card. Line breaks are kept so a
+// multi-line post reads as it does in Mattermost; runs of blank lines are
+// collapsed and trailing spaces trimmed. Only a post larger than the safety
+// bound is shortened.
 func previewExcerpt(message string) string {
-	flat := strings.Join(strings.Fields(message), " ")
-	if len(flat) <= maxPreviewDescription {
-		return flat
+	text := strings.ReplaceAll(message, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		line = strings.TrimRight(line, " \t")
+		if line == "" {
+			if blank || len(out) == 0 {
+				continue
+			}
+			blank = true
+		} else {
+			blank = false
+		}
+		out = append(out, line)
+	}
+	text = strings.TrimSpace(strings.Join(out, "\n"))
+	if len(text) <= maxPreviewDescription {
+		return text
 	}
 	// Do not cut a UTF-8 sequence in half.
 	cut := maxPreviewDescription
-	for cut > 0 && !utf8Start(flat[cut]) {
+	for cut > 0 && !utf8Start(text[cut]) {
 		cut--
 	}
-	return strings.TrimRight(flat[:cut], " ") + "…"
+	return strings.TrimRight(text[:cut], " \n") + "…"
 }
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
