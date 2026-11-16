@@ -166,15 +166,14 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 
 func (c *MattermostClient) connectLoop() {
 	backoff := 5 * time.Second
+	failures := 0
 	for {
 		cl := mattermost.NewClient(c.serverURL(), c.Token)
 		if err := cl.Connect(); err != nil {
-			c.UserLogin.BridgeState.Send(status.BridgeState{
-				StateEvent: status.StateUnknownError,
-				Error:      "mm-connect-failed",
-				Message:    err.Error(),
-			})
+			failures++
+			c.UserLogin.BridgeState.Send(connectFailedState(failures, err))
 		} else {
+			failures = 0
 			c.mu.Lock()
 			c.client = cl
 			c.mu.Unlock()
@@ -429,12 +428,8 @@ func (c *MattermostClient) processEvents() {
 		}
 	}
 
-	// Events channel closed — WebSocket disconnected.
-	c.UserLogin.BridgeState.Send(status.BridgeState{
-		StateEvent: status.StateUnknownError,
-		Error:      "mm-disconnected",
-		Message:    "WebSocket connection closed",
-	})
+	// Events channel closed — WebSocket disconnected. connectLoop reconnects.
+	c.UserLogin.BridgeState.Send(websocketDisconnectedState())
 }
 
 // syncChannels fetches all teams + channels for the user and queues ChatResync events.
