@@ -115,3 +115,28 @@ func TestWrapSendErr_NonNil(t *testing.T) {
 type errSendTest string
 
 func (e errSendTest) Error() string { return string(e) }
+
+func TestMediaCaption(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		fileName string
+		want     string
+	}{
+		// What Beeper sends for a pasted image with no caption.
+		{"filename repeated in body", "image.png", "image.png", ""},
+		{"real caption", "I need these inputs.", "image.png", "I need these inputs."},
+		// Pre-MSC2530 clients: body is the filename and filename is unset.
+		{"legacy body only", "image.png", "", ""},
+		{"empty", "", "", ""},
+		{"filename only", "", "image.png", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := &event.MessageEventContent{MsgType: event.MsgImage, Body: tc.body, FileName: tc.fileName}
+			if got := mediaCaption(content); got != tc.want {
+				t.Errorf("mediaCaption(body=%q, filename=%q) = %q, want %q", tc.body, tc.fileName, got, tc.want)
+			}
+		})
+	}
+}
