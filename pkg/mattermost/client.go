@@ -22,7 +22,36 @@ type Client struct {
 	WS        *websocket.Conn
 	Events    chan any
 
+	// Logf, when set, receives one debug line per WebSocket frame. Silent
+	// frame loss between the socket and the connector is otherwise
+	// undiagnosable.
+	Logf func(format string, args ...any)
+
 	wmu sync.Mutex // guards all WS writes
+}
+
+func (c *Client) logf(format string, args ...any) {
+	if c.Logf != nil {
+		c.Logf(format, args...)
+	}
+}
+
+// describeFrame summarizes a raw WS frame for debug logs without including the
+// payload (posts and tokens never appear in logs).
+func describeFrame(raw []byte) string {
+	var f struct {
+		Event    string `json:"event"`
+		Status   string `json:"status"`
+		SeqReply int64  `json:"seq_reply"`
+		Seq      int64  `json:"seq"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return fmt.Sprintf("unparsable bytes=%d", len(raw))
+	}
+	if f.Event != "" {
+		return fmt.Sprintf("event=%s seq=%d bytes=%d", f.Event, f.Seq, len(raw))
+	}
+	return fmt.Sprintf("reply status=%q seq_reply=%d bytes=%d", f.Status, f.SeqReply, len(raw))
 }
 
 // NewClient creates a new Mattermost WS client. serverURL must be the base HTTP(S) URL.
@@ -93,6 +122,7 @@ func (c *Client) readLoop() {
 			return
 		}
 		c.WS.SetReadDeadline(time.Now().Add(pongWait))
+		c.logf("mm ws frame: %s", describeFrame(message))
 		c.parseEvent(message)
 	}
 }
@@ -186,10 +216,21 @@ func (c *Client) parseEvent(raw []byte) {
 		}
 
 	case "channel_deleted":
-		c.Events <- &ChannelDeletedEvent{
-			ChannelID: env.Broadcast.ChannelID,
-			TeamID:    strFromData(env.Data, "team_id"),
+		channelID := strFromData(env.Data, "channel_id")
+		if channelID == "" {
+			return
 		}
+		c.Events <- &ChannelDeletedEvent{
+			ChannelID: channelID,
+			TeamID:    env.Broadcast.TeamID,
+		}
+
+	case "channel_restored":
+		channelID := strFromData(env.Data, "channel_id")
+		if channelID == "" {
+			return
+		}
+		c.Events <- &ChannelRestoredEvent{ChannelID: channelID, TeamID: env.Broadcast.TeamID}
 
 	case "direct_added":
 		c.Events <- &DirectAddedEvent{ChannelID: env.Broadcast.ChannelID}

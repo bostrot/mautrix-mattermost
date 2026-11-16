@@ -17,6 +17,64 @@ import (
 // e.g. because the session expired or was revoked.
 var ErrUnauthorized = errors.New("mattermost: unauthorized")
 
+// ErrIDChannelGetExisting is the Mattermost server error id returned by
+// GET /api/v4/channels/{id} when the authoritative server has no channel with
+// that id. It is the only 404 payload that may be treated as proof of a
+// permanent deletion; proxies, permission walls and generic 404s are not.
+const ErrIDChannelGetExisting = "app.channel.get.existing.app_error"
+
+// HTTPError preserves the non-2xx response details (status code, request path and
+// response body) so callers can classify failures instead of parsing error strings.
+// A 401 response also unwraps to ErrUnauthorized.
+type HTTPError struct {
+	StatusCode int
+	Path       string
+	Body       string
+	// ErrorID is Mattermost's machine-readable error id from the JSON body
+	// ("id"), empty when the body is absent or not JSON.
+	ErrorID string
+	// BodyStatusCode is the status_code declared inside the JSON body, 0 when
+	// absent or undecodable. It must be consistent with StatusCode whenever it
+	// is used as evidence.
+	BodyStatusCode int
+}
+
+// IsAuthoritativeChannelNotFound reports whether this error is Mattermost's
+// explicit "channel id does not exist" answer for exactly channelID: HTTP 404 on
+// the canonical GET /api/v4/channels/{id} path, the
+// ErrIDChannelGetExisting error id, and (when present) a matching status_code
+// in the body. Anything else is not proof of a permanent deletion.
+func (e *HTTPError) IsAuthoritativeChannelNotFound(channelID string) bool {
+	if e == nil || channelID == "" {
+		return false
+	}
+	if e.StatusCode != http.StatusNotFound {
+		return false
+	}
+	if e.Path != "/api/v4/channels/"+channelID {
+		return false
+	}
+	if e.ErrorID != ErrIDChannelGetExisting {
+		return false
+	}
+	if e.BodyStatusCode != 0 && e.BodyStatusCode != http.StatusNotFound {
+		return false
+	}
+	return true
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.Path, e.Body)
+}
+
+// Unwrap lets errors.Is(err, ErrUnauthorized) match a 401 HTTPError.
+func (e *HTTPError) Unwrap() error {
+	if e.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
 // normalizeURL trims any trailing slashes from a server URL.
 func normalizeURL(serverURL string) string {
 	return strings.TrimRight(serverURL, "/")
@@ -81,6 +139,18 @@ func GetTeams(serverURL, token, userID string) ([]*Team, error) {
 func GetChannelsForUser(serverURL, token, userID, teamID string) ([]*Channel, error) {
 	var channels []*Channel
 	path := fmt.Sprintf("/api/v4/users/%s/teams/%s/channels", userID, teamID)
+	if err := doGet(serverURL, token, path, &channels); err != nil {
+		return nil, err
+	}
+	return channels, nil
+}
+
+// GetChannelsForUserIncludingArchived is GetChannelsForUser plus archived
+// channels (delete_at > 0). The plain listing omits them, which makes archive
+// and restore invisible to anything that only looks at it.
+func GetChannelsForUserIncludingArchived(serverURL, token, userID, teamID string) ([]*Channel, error) {
+	var channels []*Channel
+	path := fmt.Sprintf("/api/v4/users/%s/teams/%s/channels?include_deleted=true", userID, teamID)
 	if err := doGet(serverURL, token, path, &channels); err != nil {
 		return nil, err
 	}
@@ -207,13 +277,20 @@ func doGet(serverURL, token, path string, out any) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%w: HTTP 401 from %s: %s", ErrUnauthorized, path, string(body))
-	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(body))
+		httpErr := &HTTPError{StatusCode: resp.StatusCode, Path: path, Body: string(body)}
+		// Mattermost error bodies are JSON ({"id": ..., "message": ..., "status_code": ...}).
+		// Record the id/status so callers can classify failures without parsing text.
+		var payload struct {
+			ID         string `json:"id"`
+			StatusCode int    `json:"status_code"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			httpErr.ErrorID = payload.ID
+			httpErr.BodyStatusCode = payload.StatusCode
+		}
+		return httpErr
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
