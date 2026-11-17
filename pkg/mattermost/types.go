@@ -73,6 +73,8 @@ type Channel struct {
 	Name        string `json:"name"`
 	Header      string `json:"header"`
 	Purpose     string `json:"purpose"`
+	// DeleteAt is the soft-deletion (archive) timestamp in milliseconds, 0 when active.
+	DeleteAt int64 `json:"delete_at"`
 }
 
 // IsDM returns true for 1:1 direct message channels.
@@ -189,6 +191,12 @@ type ChannelUpdatedEvent struct {
 
 // ChannelDeletedEvent signals a channel was deleted.
 type ChannelDeletedEvent struct {
+	ChannelID string
+	TeamID    string
+}
+
+// ChannelRestoredEvent signals a channel was unarchived.
+type ChannelRestoredEvent struct {
 	ChannelID string
 	TeamID    string
 }

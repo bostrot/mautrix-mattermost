@@ -20,6 +20,7 @@ func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 	c.mu.RUnlock()
 
 	// Always fetch fresh data so we have up-to-date display name + type.
+	// Archive state is reconciled separately through the journal.
 	if fresh, err := mattermost.GetChannel(c.serverURL(), c.Token, chID); err == nil {
 		ch = fresh
 		ok = true
