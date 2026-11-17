@@ -222,6 +222,21 @@ func doGet(serverURL, token, path string, out any) error {
 	return nil
 }
 
+// ViewChannel marks a channel read for the token's user, as opening it in
+// Mattermost does (POST /channels/members/me/view).
+func ViewChannel(serverURL, token, channelID string) error {
+	body := map[string]any{"channel_id": channelID, "prev_channel_id": "", "collapsed_threads_supported": true}
+	return doPost(serverURL, token, "/api/v4/channels/members/me/view", body, &struct{}{})
+}
+
+// MarkThreadRead marks a collapsed reply thread read up to ts (milliseconds)
+// for the user. Mattermost keys thread state by team; DM and group threads
+// accept any team the user belongs to.
+func MarkThreadRead(serverURL, token, userID, teamID, threadID string, ts int64) error {
+	path := fmt.Sprintf("/api/v4/users/%s/teams/%s/threads/%s/read/%d", userID, teamID, threadID, ts)
+	return doPut(serverURL, token, path, nil)
+}
+
 func doPost(serverURL, token, path string, body any, out any) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
