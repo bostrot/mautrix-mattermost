@@ -53,6 +53,27 @@ func outboundRootID(msg *bridgev2.MatrixMessage) string {
 	return ""
 }
 
+// threadRootFor returns the Mattermost root_id for msg. A reply target with no
+// stored thread root may still be a Mattermost thread reply (a plain Matrix
+// reply, or a row bridged before thread roots were stored). Mattermost rejects
+// a root_id that isn't the thread's root with HTTP 400, so ask for its real root.
+func (c *MattermostClient) threadRootFor(ctx context.Context, msg *bridgev2.MatrixMessage) string {
+	rootID := outboundRootID(msg)
+	if rootID == "" || msg.ThreadRoot != nil || msg.ReplyTo.ThreadRoot != "" {
+		return rootID
+	}
+	post, err := mattermost.GetPost(c.serverURL(), c.Token, rootID)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Str("target_post_id", rootID).
+			Msg("Failed to resolve thread root, sending with the reply target as root_id")
+		return rootID
+	}
+	if post.RootID != "" {
+		return post.RootID
+	}
+	return rootID
+}
+
 // HandleMatrixMessage bridges a message from Matrix → Mattermost.
 func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
 	c.mu.RLock()
@@ -68,7 +89,7 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	channelID := string(msg.Portal.ID)
-	rootID := outboundRootID(msg)
+	rootID := c.threadRootFor(ctx, msg)
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
@@ -101,8 +122,9 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		return &bridgev2.MatrixMessageResponse{
 			DB: &database.Message{
-				ID:       networkid.MessageID(postID),
-				SenderID: networkid.UserID(c.UserID),
+				ID:         networkid.MessageID(postID),
+				SenderID:   networkid.UserID(c.UserID),
+				ThreadRoot: networkid.MessageID(rootID),
 			},
 		}, nil
 
@@ -161,8 +183,9 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		return &bridgev2.MatrixMessageResponse{
 			DB: &database.Message{
-				ID:       networkid.MessageID(postID),
-				SenderID: networkid.UserID(c.UserID),
+				ID:         networkid.MessageID(postID),
+				SenderID:   networkid.UserID(c.UserID),
+				ThreadRoot: networkid.MessageID(rootID),
 			},
 		}, nil
 

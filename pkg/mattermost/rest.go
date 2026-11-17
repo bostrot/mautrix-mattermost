@@ -106,6 +106,15 @@ func GetChannelMembers(serverURL, token, channelID string) ([]*ChannelMember, er
 	return members, nil
 }
 
+// GetPost fetches a single post by ID.
+func GetPost(serverURL, token, postID string) (*Post, error) {
+	var p Post
+	if err := doGet(serverURL, token, "/api/v4/posts/"+postID, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // GetPosts fetches posts from a channel. beforePostID paginates backwards.
 // Returns posts ordered newest-first.
 func GetPosts(serverURL, token, channelID string, perPage int, beforePostID string) (*PostList, error) {
