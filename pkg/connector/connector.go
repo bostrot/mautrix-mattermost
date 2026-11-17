@@ -30,6 +30,11 @@ func (m *MattermostConnector) Init(bridge *bridgev2.Bridge) {
 }
 
 func (m *MattermostConnector) Start(ctx context.Context) error {
+	if m.Config != nil {
+		if _, err := parseDisplayNames(m.Config.DisplayNames); err != nil {
+			return fmt.Errorf("network.display_names: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -59,7 +64,12 @@ func (m *MattermostConnector) GetConfig() (string, any, configupgrade.Upgrader) 
 	if m.Config == nil {
 		m.Config = &Config{}
 	}
-	return ExampleConfig, m.Config, configupgrade.SimpleUpgrader(func(configupgrade.Helper) {})
+	return ExampleConfig, m.Config, configupgrade.SimpleUpgrader(upgradeConfig)
+}
+
+// upgradeConfig carries the user's network options over the example config.
+func upgradeConfig(helper configupgrade.Helper) {
+	helper.Copy(configupgrade.Str, "display_names")
 }
 
 func (m *MattermostConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -474,9 +484,22 @@ func webviewCookieStep(rawURL string) (*bridgev2.LoginStep, string, error) {
 	}, serverURL, nil
 }
 
-// Config holds any future bridge-specific configuration.
-type Config struct{}
+// Config holds the bridge-specific configuration.
+type Config struct {
+	// DisplayNames picks how Mattermost users are named in Matrix (see
+	// displaynames.go). Empty means "server".
+	DisplayNames string `yaml:"display_names"`
+}
 
 const ExampleConfig = `# Mattermost Bridge Configuration
-# Additional per-network settings can be added here.
+
+# How Mattermost people are named in Matrix: their names and the text of
+# @mention pills. Mentions are always sent and matched by username.
+#   server    - as Mattermost shows them to you: your own display preference,
+#               else the server's "Teammate Name Display" setting
+#   username  - username (alice)
+#   full_name - First Last, falling back to username
+#   nickname  - nickname, then First Last, then username
+# Changes apply to existing names at the next bridge restart.
+display_names: server
 `

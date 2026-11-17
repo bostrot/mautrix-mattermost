@@ -3,7 +3,6 @@ package connector
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/rs/zerolog"
 
@@ -11,14 +10,41 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/format"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
 
+// mattermostFormatting is the Matrix formatting that survives conversion to
+// Mattermost Markdown (see outboundMarkdown). Clients use it to decide what to
+// send: without user_link, Beeper sends mentions as plain text instead of
+// pills. Underline, spoilers, tables, superscript and colours have no
+// Mattermost Markdown equivalent, so they are left undeclared (unsupported).
+var mattermostFormatting = event.FormattingFeatureMap{
+	event.FmtBold:               event.CapLevelFullySupported,
+	event.FmtItalic:             event.CapLevelFullySupported,
+	event.FmtStrikethrough:      event.CapLevelFullySupported,
+	event.FmtInlineCode:         event.CapLevelFullySupported,
+	event.FmtCodeBlock:          event.CapLevelFullySupported,
+	event.FmtSyntaxHighlighting: event.CapLevelFullySupported,
+	event.FmtBlockquote:         event.CapLevelFullySupported,
+	event.FmtInlineLink:         event.CapLevelFullySupported,
+	event.FmtUserLink:           event.CapLevelFullySupported,
+	event.FmtAtRoomMention:      event.CapLevelFullySupported,
+	event.FmtUnorderedList:      event.CapLevelFullySupported,
+	event.FmtOrderedList:        event.CapLevelFullySupported,
+	event.FmtListStart:          event.CapLevelFullySupported,
+	event.FmtHeaders:            event.CapLevelFullySupported,
+	event.FmtHorizontalLine:     event.CapLevelFullySupported,
+}
+
+// mattermostMaxPostRunes is Mattermost's default maximum post length.
+const mattermostMaxPostRunes = 16383
+
 // GetCapabilities returns the Matrix room features supported by this connector.
 func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
+		Formatting:          mattermostFormatting,
+		MaxTextLength:       mattermostMaxPostRunes,
 		Delete:              event.CapLevelFullySupported,
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
@@ -58,25 +84,8 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
-		body := content.Body
-		if content.FormattedBody != "" {
-			body = format.HTMLToMarkdown(content.FormattedBody)
-		}
-		// Replace Matrix @mention pills with Mattermost @username mentions.
-		if content.Mentions != nil {
-			for _, mxid := range content.Mentions.UserIDs {
-				ghost, err := c.UserLogin.Bridge.GetGhostByMXID(ctx, mxid)
-				if err != nil || ghost == nil {
-					continue
-				}
-				c.mu.RLock()
-				u, hasUser := c.users[string(ghost.ID)]
-				c.mu.RUnlock()
-				if hasUser {
-					body = strings.ReplaceAll(body, "@"+u.DisplayName(), "@"+u.Username)
-				}
-			}
-		}
+		// Markdown for Mattermost, with mention pills as "@username".
+		body := c.outboundMarkdown(ctx, content)
 		if content.MsgType == event.MsgEmote {
 			body = "_" + body + "_"
 		}
@@ -170,12 +179,7 @@ func (c *MattermostClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 	if msg.Content.NewContent != nil {
 		src = msg.Content.NewContent
 	}
-	var newBody string
-	if src.FormattedBody != "" {
-		newBody = format.HTMLToMarkdown(src.FormattedBody)
-	} else {
-		newBody = src.Body
-	}
+	newBody := c.outboundMarkdown(ctx, src)
 
 	return wrapSendErr(mattermost.EditPost(c.serverURL(), c.Token, string(msg.EditTarget.ID), newBody))
 }
