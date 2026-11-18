@@ -58,7 +58,7 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 			converted = &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
 				ID:      networkid.PartID(""),
 				Type:    event.EventMessage,
-				Content: &event.MessageEventContent{MsgType: event.MsgText, Body: post.Message},
+				Content: &event.MessageEventContent{MsgType: event.MsgText, Body: postMarkdown(post)},
 			}}}
 		}
 

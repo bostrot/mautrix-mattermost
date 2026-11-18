@@ -283,7 +283,7 @@ func (c *MattermostClient) processEvents() {
 					for _, dbMsg := range existing {
 						content := &event.MessageEventContent{
 							MsgType: event.MsgText,
-							Body:    data.Message,
+							Body:    postMarkdown(data),
 						}
 						parts = append(parts, &bridgev2.ConvertedEditPart{
 							Part:    dbMsg,
