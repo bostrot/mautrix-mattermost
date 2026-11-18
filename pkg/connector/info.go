@@ -13,6 +13,9 @@ import (
 
 // GetChatInfo returns Matrix room metadata for a Mattermost channel.
 func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	if teamID, ok := teamIDFromPortal(portal.ID); ok {
+		return c.teamChatInfo(teamID)
+	}
 	chID := string(portal.ID)
 
 	c.mu.RLock()
@@ -112,11 +115,15 @@ func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 		OtherUserID: otherUserID,
 	}
 
-	return &bridgev2.ChatInfo{
+	info := &bridgev2.ChatInfo{
 		Name:    name,
 		Type:    &roomType,
 		Members: chatMembers,
-	}, nil
+	}
+	if ok {
+		info.ParentID = channelParent(ch)
+	}
+	return info, nil
 }
 
 // GetUserInfo returns Matrix ghost metadata for a Mattermost user.

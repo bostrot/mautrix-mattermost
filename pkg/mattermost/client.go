@@ -206,6 +206,13 @@ func (c *Client) parseEvent(raw []byte) {
 			c.Events <- &UserUpdatedEvent{User: u}
 		}
 
+	case "update_team":
+		raw := strFromData(env.Data, "team")
+		var t Team
+		if raw != "" && json.Unmarshal([]byte(raw), &t) == nil && t.ID != "" {
+			c.Events <- &TeamUpdatedEvent{Team: &t}
+		}
+
 	case "system_console_noti": // ignore console notifications
 
 	default:
