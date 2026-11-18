@@ -18,20 +18,20 @@ import (
 const testPostID = "6iipo5hskp89bqqxoekgbhnoje"
 
 func TestFindPermalinks(t *testing.T) {
-	const server = "https://mm.fpl.dev"
+	const server = "https://mm.example.com"
 	cases := []struct {
 		name string
 		text string
 		want []string // post IDs
 	}{
-		{"plain permalink", "https://mm.fpl.dev/fpl/pl/" + testPostID, []string{testPostID}},
-		{"with query and fragment", "https://mm.fpl.dev/fpl/pl/" + testPostID + "?focus=true#abc", []string{testPostID}},
-		{"sentence punctuation", "see https://mm.fpl.dev/fpl/pl/" + testPostID + ".", []string{testPostID}},
-		{"http and port", "http://mm.fpl.dev:8065/fpl/pl/" + testPostID, []string{testPostID}},
+		{"plain permalink", "https://mm.example.com/fpl/pl/" + testPostID, []string{testPostID}},
+		{"with query and fragment", "https://mm.example.com/fpl/pl/" + testPostID + "?focus=true#abc", []string{testPostID}},
+		{"sentence punctuation", "see https://mm.example.com/fpl/pl/" + testPostID + ".", []string{testPostID}},
+		{"http and port", "http://mm.example.com:8065/fpl/pl/" + testPostID, []string{testPostID}},
 		{"other host untouched", "https://example.com/fpl/pl/" + testPostID, nil},
-		{"same host, different path", "https://mm.fpl.dev/fpl/channels/town-square", nil},
+		{"same host, different path", "https://mm.example.com/fpl/channels/town-square", nil},
 		{"bare path without host", "/fpl/pl/" + testPostID, nil},
-		{"short id is not a post", "https://mm.fpl.dev/fpl/pl/abc123", nil},
+		{"short id is not a post", "https://mm.example.com/fpl/pl/abc123", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,12 +61,12 @@ func TestFindPermalinksDedupesAndCaps(t *testing.T) {
 	}
 	var parts []string
 	for i, id := range ids {
-		parts = append(parts, "https://mm.fpl.dev/fpl/pl/"+id)
+		parts = append(parts, "https://mm.example.com/fpl/pl/"+id)
 		if i == 0 {
-			parts = append(parts, "https://mm.fpl.dev/fpl/pl/"+id) // duplicate, early
+			parts = append(parts, "https://mm.example.com/fpl/pl/"+id) // duplicate, early
 		}
 	}
-	got := findPermalinks(strings.Join(parts, " "), "https://mm.fpl.dev")
+	got := findPermalinks(strings.Join(parts, " "), "https://mm.example.com")
 	if len(got) != maxPreviewsPerMessage {
 		t.Fatalf("got %d permalinks, want the cap of %d", len(got), maxPreviewsPerMessage)
 	}
