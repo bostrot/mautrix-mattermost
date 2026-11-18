@@ -35,6 +35,13 @@ type MattermostClient struct {
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
 	done     chan struct{}                  // closed by Disconnect to stop reconnect loop
+
+	// getTeamFn and queueTeamFn override the team fetch and event delivery
+	// in tests (teams.go).
+	getTeamFn   func(teamID string) (*mattermost.Team, error)
+	queueTeamFn func(bridgev2.RemoteEvent)
+	// queueChannelFn overrides channel resync delivery in tests.
+	queueChannelFn func(bridgev2.RemoteEvent)
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -136,7 +143,7 @@ func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
 		OtherUserID: otherUserID,
 	}
 
-	c.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
 			CreatePortal: true,
@@ -148,9 +155,15 @@ func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
 			Type:        &roomType,
 			Members:     members,
 			CanBackfill: true,
+			ParentID:    channelParent(ch), // the team's space (teams.go)
 		},
 		CheckNeedsBackfillFunc: func(_ context.Context, _ *database.Message) (bool, error) { return true, nil },
-	})
+	}
+	if c.queueChannelFn != nil {
+		c.queueChannelFn(resync)
+		return
+	}
+	c.UserLogin.QueueRemoteEvent(resync)
 }
 
 func (c *MattermostClient) Connect(ctx context.Context) {
@@ -408,6 +421,9 @@ func (c *MattermostClient) processEvents() {
 				c.queueChannelResync(ch)
 			}(evt.ChannelID)
 
+		case *mattermost.TeamUpdatedEvent:
+			c.queueTeamResync(evt.Team)
+
 		case *mattermost.UserUpdatedEvent:
 			if evt.User == nil {
 				continue
@@ -445,6 +461,11 @@ func (c *MattermostClient) syncChannels() {
 	}
 
 	seenChannels := make(map[string]bool)
+
+	// Spaces first, so channels have their parent space when they sync.
+	for _, team := range teams {
+		c.queueTeamResync(team)
+	}
 
 	for _, team := range teams {
 		channels, err := mattermost.GetChannelsForUser(c.serverURL(), c.Token, c.UserID, team.ID)
