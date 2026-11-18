@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -172,4 +173,40 @@ func TestProcessEventsChannelsViewedQueuesReceipt(t *testing.T) {
 	if len(got) != 1 || got[0].GetType() != bridgev2.RemoteEventReadReceipt {
 		t.Fatalf("queued %v, want one read receipt", got)
 	}
+}
+
+func TestMatrixReadSkipsTeamSpace(t *testing.T) {
+	requests := 0
+	transport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	http.DefaultTransport = readReceiptTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return nil, fmt.Errorf("unexpected request: %s %s", r.Method, r.URL)
+	})
+
+	for _, hooks := range []bool{true, false} {
+		c, views, threads := readClient()
+		c.ServerURL = "https://example.com"
+		if !hooks {
+			c.viewChannelFn = nil
+			c.markThreadReadFn = nil
+		}
+		for _, thread := range []event.ThreadID{"", "$root"} {
+			if err := c.HandleMatrixReadReceipt(context.Background(), receipt("team:t1", readNow, thread, false)); err != nil {
+				t.Error(err)
+			}
+		}
+		if len(*views) != 0 || len(*threads) != 0 {
+			t.Errorf("team receipts reached provider hooks: views=%v threads=%v", *views, *threads)
+		}
+	}
+	if requests != 0 {
+		t.Errorf("team receipts made %d HTTP requests, want zero", requests)
+	}
+}
+
+type readReceiptTransport func(*http.Request) (*http.Response, error)
+
+func (transport readReceiptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return transport(req)
 }

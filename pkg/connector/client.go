@@ -74,6 +74,13 @@ type MattermostClient struct {
 	displayNamesFn func() string
 	// channelMembersFn overrides the channel member fetch in tests.
 	channelMembersFn func(channelID string) ([]*mattermost.ChannelMember, error)
+
+	// getTeamFn and queueTeamFn override the team fetch and event delivery
+	// in tests (teams.go).
+	getTeamFn   func(teamID string) (*mattermost.Team, error)
+	queueTeamFn func(bridgev2.RemoteEvent)
+	// queueChannelFn overrides channel resync delivery in tests.
+	queueChannelFn func(bridgev2.RemoteEvent)
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -124,7 +131,12 @@ func (c *MattermostClient) serverURL() string {
 
 // queueChannelResync queues a ChatResync event for a single Mattermost channel.
 func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
-	c.UserLogin.QueueRemoteEvent(c.channelResyncEvent(ch))
+	ev := c.channelResyncEvent(ch)
+	if c.queueChannelFn != nil {
+		c.queueChannelFn(ev)
+		return
+	}
+	c.UserLogin.QueueRemoteEvent(ev)
 }
 
 // channelResyncEvent builds the ChatResync that creates or refreshes a
@@ -163,14 +175,15 @@ func (c *MattermostClient) channelResyncEvent(ch *mattermost.Channel) *simpleven
 			PortalKey:    networkid.PortalKey{ID: networkid.PortalID(ch.ID), Receiver: c.UserLogin.ID},
 			LogContext:   func(z zerolog.Context) zerolog.Context { return z },
 		},
-		// Members are fetched when the portal handles the event, not here, so
-		// the websocket loop never waits on the members request.
+		// Fetch members when the portal handles the event so the websocket
+		// loop never waits on the members request.
 		GetChatInfoFunc: func(ctx context.Context, _ *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 			return &bridgev2.ChatInfo{
 				Name:        name,
 				Type:        &roomType,
 				Members:     c.chatMembers(ctx, ch),
 				CanBackfill: true,
+				ParentID:    channelParent(ch),
 			}, nil
 		},
 		CheckNeedsBackfillFunc: func(_ context.Context, _ *database.Message) (bool, error) { return true, nil },
@@ -423,6 +436,9 @@ func (c *MattermostClient) processEvents() {
 				c.queueChannelResync(ch)
 			}(evt.ChannelID)
 
+		case *mattermost.TeamUpdatedEvent:
+			c.queueTeamResync(evt.Team)
+
 		case *mattermost.UserUpdatedEvent:
 			if evt.User == nil {
 				continue
@@ -454,6 +470,11 @@ func (c *MattermostClient) syncChannels() {
 	}
 
 	seenChannels := make(map[string]bool)
+
+	// Spaces first, so channels have their parent space when they sync.
+	for _, team := range teams {
+		c.queueTeamResync(team)
+	}
 
 	for _, team := range teams {
 		channels, err := mattermost.GetChannelsForUser(c.serverURL(), c.Token, c.UserID, team.ID)
