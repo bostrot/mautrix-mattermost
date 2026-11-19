@@ -1,9 +1,12 @@
 package connector
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"maunium.net/go/mautrix/event"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
@@ -159,4 +162,20 @@ func linkifyURLs(s string) string {
 		}
 		return prefix + "<" + url + ">" + trail
 	})
+}
+
+// renderPost renders a post's full Markdown, attachments included, with
+// mention pills. Only the post's own message may ping anyone: an @channel or
+// @user inside an integration's attachment is shown but does not notify.
+func (c *MattermostClient) renderPost(ctx context.Context, post *mattermost.Post) event.MessageEventContent {
+	text := postMarkdown(post)
+	content := c.renderPostText(ctx, text)
+	if text != post.Message {
+		mentions := c.renderPostText(ctx, post.Message).Mentions
+		if mentions == nil {
+			mentions = &event.Mentions{}
+		}
+		content.Mentions = mentions
+	}
+	return content
 }

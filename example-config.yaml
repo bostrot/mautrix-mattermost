@@ -1,3 +1,11 @@
 network:
-    # No extra Mattermost-specific config is required here.
-    # Server URL and credentials are provided via the bridge login flow.
+    # Mattermost server URL and credentials are provided via the bridge login flow.
+    # How Mattermost people are named in Matrix: their names and the text of
+    # @mention pills. Mentions are always sent and matched by username.
+    #   nickname  - nickname, then First Last, then username (default)
+    #   username  - username (alice)
+    #   full_name - First Last, falling back to username
+    #   server    - as Mattermost shows them to you: your own display preference,
+    #               else the server's "Teammate Name Display" setting
+    # Changes apply to existing names at the next bridge restart.
+    display_names: nickname

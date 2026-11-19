@@ -15,6 +15,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
@@ -52,6 +53,26 @@ type MattermostClient struct {
 	threadRootFn     func(threadMXID string) string
 	readNowFn        func() time.Time
 	queueReceiptFn   func(bridgev2.RemoteEvent)
+
+	// mentions caches username lookups for @mentions (see mentions.go).
+	mentions mentionCache
+	// ghostMXIDFn and parseGhostFn override the ghost <-> Matrix ID mapping in
+	// tests. When nil, the bridge's Matrix connector is used.
+	ghostMXIDFn  func(mmUserID string) id.UserID
+	parseGhostFn func(mxid id.UserID) string
+	// ghostNameFn overrides reading a ghost's Matrix name in tests.
+	ghostNameFn func(mmUserID string) string
+	// usersByIDsFn and refreshGhostFn override profile fetches and ghost
+	// updates in tests.
+	usersByIDsFn   func(ids []string) ([]*mattermost.User, error)
+	refreshGhostFn func(u *mattermost.User)
+	// nameFormat is the Mattermost name format in use (see displaynames.go).
+	// Guarded by mu.
+	nameFormat string
+	// displayNamesFn overrides network.display_names in tests.
+	displayNamesFn func() string
+	// channelMembersFn overrides the channel member fetch in tests.
+	channelMembersFn func(channelID string) ([]*mattermost.ChannelMember, error)
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -102,6 +123,12 @@ func (c *MattermostClient) serverURL() string {
 
 // queueChannelResync queues a ChatResync event for a single Mattermost channel.
 func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
+	c.UserLogin.QueueRemoteEvent(c.channelResyncEvent(ch))
+}
+
+// channelResyncEvent builds the ChatResync that creates or refreshes a
+// channel's room.
+func (c *MattermostClient) channelResyncEvent(ch *mattermost.Channel) *simplevent.ChatResync {
 	roomType := database.RoomTypeDefault
 	switch {
 	case ch.IsDM():
@@ -116,58 +143,37 @@ func (c *MattermostClient) queueChannelResync(ch *mattermost.Channel) {
 		name = &n
 	}
 
-	var otherUserID networkid.UserID
-	memberMap := make(bridgev2.ChatMemberMap)
-	if c.UserID != "" {
-		memberMap[networkid.UserID(c.UserID)] = bridgev2.ChatMember{
-			EventSender: bridgev2.EventSender{
-				Sender:      networkid.UserID(c.UserID),
-				IsFromMe:    true,
-				SenderLogin: c.UserLogin.ID,
-			},
-			Membership: event.MembershipJoin,
-		}
-	}
-
-	// For DMs, resolve the other participant's display name and ID.
-	if ch.IsDM() {
-		otherID := dmOtherUserID(ch.Name, c.UserID)
-		if otherID != "" {
-			otherUserID = networkid.UserID(otherID)
-			memberMap[networkid.UserID(otherID)] = bridgev2.ChatMember{
-				EventSender: bridgev2.EventSender{Sender: networkid.UserID(otherID)},
-				Membership:  event.MembershipJoin,
-			}
+	// For DMs, name the room after the other participant.
+	if ch.IsDM() && name == nil {
+		if otherID := dmOtherUserID(ch.Name, c.UserID); otherID != "" {
 			c.mu.RLock()
-			if u, ok := c.users[otherID]; ok && name == nil {
-				n := u.DisplayName()
+			if u, ok := c.users[otherID]; ok {
+				n := c.displayName(u)
 				name = &n
 			}
 			c.mu.RUnlock()
 		}
 	}
 
-	members := &bridgev2.ChatMemberList{
-		IsFull:      ch.IsDM(),
-		MemberMap:   memberMap,
-		OtherUserID: otherUserID,
-	}
-
-	c.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
+	return &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
 			CreatePortal: true,
 			PortalKey:    networkid.PortalKey{ID: networkid.PortalID(ch.ID), Receiver: c.UserLogin.ID},
 			LogContext:   func(z zerolog.Context) zerolog.Context { return z },
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name:        name,
-			Type:        &roomType,
-			Members:     members,
-			CanBackfill: true,
+		// Members are fetched when the portal handles the event, not here, so
+		// the websocket loop never waits on the members request.
+		GetChatInfoFunc: func(ctx context.Context, _ *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+			return &bridgev2.ChatInfo{
+				Name:        name,
+				Type:        &roomType,
+				Members:     c.chatMembers(ctx, ch),
+				CanBackfill: true,
+			}, nil
 		},
 		CheckNeedsBackfillFunc: func(_ context.Context, _ *database.Message) (bool, error) { return true, nil },
-	})
+	}
 }
 
 func (c *MattermostClient) Connect(ctx context.Context) {
@@ -177,6 +183,8 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 			c.UserID = id
 		}
 	}
+	// Before anything is synced, so names come out in the right format.
+	c.resolveNameFormat(c.UserLogin.Log)
 	c.done = make(chan struct{})
 	go c.connectLoop()
 }
@@ -405,6 +413,9 @@ func (c *MattermostClient) processEvents() {
 				portalKey: networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
 			})
 
+		case *mattermost.ChannelMemberEvent:
+			c.handleChannelMemberEvent(evt)
+
 		case *mattermost.DirectAddedEvent:
 			// A new DM was opened. Fetch channel info and queue a resync.
 			go func(chanID string) {
@@ -425,12 +436,7 @@ func (c *MattermostClient) processEvents() {
 			if evt.User == nil {
 				continue
 			}
-			c.mu.Lock()
-			if c.users == nil {
-				c.users = make(map[string]*mattermost.User)
-			}
-			c.users[evt.User.ID] = evt.User
-			c.mu.Unlock()
+			c.handleUserUpdated(evt.User)
 
 		case *mattermost.ChannelsViewedEvent:
 			c.handleChannelsViewed(evt)
@@ -545,7 +551,7 @@ func (c *MattermostClient) resolveDisplayName(userID string) string {
 	u, ok := c.users[userID]
 	c.mu.RUnlock()
 	if ok {
-		return u.DisplayName()
+		return c.displayName(u)
 	}
 	// Fetch and cache.
 	fetched, err := mattermost.GetUser(c.serverURL(), c.Token, userID)
@@ -558,7 +564,7 @@ func (c *MattermostClient) resolveDisplayName(userID string) string {
 	}
 	c.users[userID] = fetched
 	c.mu.Unlock()
-	return fetched.DisplayName()
+	return c.displayName(fetched)
 }
 
 // sendNotice queues a notice m.text event into a channel portal.
@@ -590,10 +596,9 @@ func (c *MattermostClient) sendNotice(channelID networkid.PortalID, body string)
 // editContent is the new content for an edited post. Linked posts are quoted
 // again, so an edit does not drop the quote the original message carried.
 func (c *MattermostClient) editContent(ctx context.Context, post *mattermost.Post) *event.MessageEventContent {
-	content := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    postMarkdown(post),
-	}
+	// Same rendering as new posts: Markdown and mentions.
+	rendered := c.renderPost(ctx, post)
+	content := &rendered
 	c.attachPermalinkQuotes(ctx, content, post.Message)
 	return content
 }

@@ -4,6 +4,7 @@ package mattermost
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,7 @@ type Post struct {
 	DeleteAt  int64         `json:"delete_at"`
 	UserID    string        `json:"user_id"`
 	ChannelID string        `json:"channel_id"`
-	RootID    string        `json:"root_id"`  // non-empty when this is a thread reply
+	RootID    string        `json:"root_id"` // non-empty when this is a thread reply
 	Message   string        `json:"message"`
 	Type      string        `json:"type"`
 	FileIDs   []string      `json:"file_ids,omitempty"`
@@ -109,14 +110,39 @@ type User struct {
 
 // DisplayName returns the most human-readable name available.
 func (u *User) DisplayName() string {
-	switch {
-	case u.Nickname != "":
-		return u.Nickname
-	case u.FirstName != "" || u.LastName != "":
-		return u.FirstName + " " + u.LastName
-	default:
-		return u.Username
+	return u.NameFor(NameFormatNicknameFullName)
+}
+
+// Mattermost's name formats, as used by the TeammateNameDisplay setting and
+// the per-user "name_format" display preference.
+const (
+	NameFormatUsername         = "username"
+	NameFormatNicknameFullName = "nickname_full_name"
+	NameFormatFullName         = "full_name"
+)
+
+// FullName is "First Last" without stray spaces; empty when neither is set.
+func (u *User) FullName() string {
+	return strings.TrimSpace(u.FirstName + " " + u.LastName)
+}
+
+// NameFor returns the user's name as Mattermost shows it under the given name
+// format, with Mattermost's fallbacks: a missing nickname falls back to the
+// full name, and a missing full name to the username. Unknown formats are
+// treated as username, Mattermost's default.
+func (u *User) NameFor(format string) string {
+	switch format {
+	case NameFormatNicknameFullName:
+		if u.Nickname != "" {
+			return u.Nickname
+		}
+		fallthrough
+	case NameFormatFullName:
+		if n := u.FullName(); n != "" {
+			return n
+		}
 	}
+	return u.Username
 }
 
 // Channel represents a Mattermost channel.
@@ -163,10 +189,10 @@ type Reaction struct {
 
 // PostList is the response from the paginated posts endpoint.
 type PostList struct {
-	Order  []string         `json:"order"`
-	Posts  map[string]*Post `json:"posts"`
-	NextPostID string       `json:"next_post_id"`
-	PrevPostID string       `json:"prev_post_id"`
+	Order      []string         `json:"order"`
+	Posts      map[string]*Post `json:"posts"`
+	NextPostID string           `json:"next_post_id"`
+	PrevPostID string           `json:"prev_post_id"`
 }
 
 // --- WebSocket event types ---
@@ -200,9 +226,9 @@ type HelloEvent struct {
 
 // PostedEvent carries a newly created post.
 type PostedEvent struct {
-	Post        *Post
-	ChannelID   string
-	TeamID      string
+	Post      *Post
+	ChannelID string
+	TeamID    string
 	// Channel metadata sent inline by Mattermost – avoids an extra REST round-trip.
 	ChannelType string // "D" = DM, "G" = group DM, "O" = public, "P" = private
 	ChannelName string // raw channel name, e.g. "userId1__userId2" for DMs
@@ -247,6 +273,14 @@ type ChannelUpdatedEvent struct {
 type ChannelDeletedEvent struct {
 	ChannelID string
 	TeamID    string
+}
+
+// ChannelMemberEvent signals that a user joined or left a channel
+// ("user_added" / "user_removed").
+type ChannelMemberEvent struct {
+	ChannelID string
+	UserID    string
+	Added     bool
 }
 
 // DirectAddedEvent signals a DM channel was opened with the local user.

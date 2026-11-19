@@ -11,7 +11,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
@@ -102,13 +101,13 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 	}
 
 	// Convert text body: the message plus any integration attachments.
-	if text := postMarkdown(post); text != "" {
-		msgText := replaceEmojiShortcodes(text)
+	if postMarkdown(post) != "" {
 		if len(parts) > 0 {
 			// Embed caption into the first attachment (Matrix caption convention / MSC2530).
 			firstContent := parts[0].Content
 			firstContent.FileName = firstContent.Body
-			rendered := format.RenderMarkdown(msgText, true, false)
+			rendered := c.renderPost(ctx, post)
+			firstContent.Mentions = rendered.Mentions
 			firstContent.Body = rendered.Body
 			if rendered.FormattedBody != "" {
 				firstContent.FormattedBody = rendered.FormattedBody
@@ -117,8 +116,7 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			c.attachPermalinkQuotes(ctx, firstContent, post.Message)
 		} else {
 			// Text-only message.
-			textContent := format.RenderMarkdown(msgText, true, false)
-			textContent.MsgType = event.MsgText
+			textContent := c.renderPost(ctx, post)
 			// Quote linked Mattermost posts under the link. Best effort: the
 			// message is sent either way.
 			c.attachPermalinkQuotes(ctx, &textContent, post.Message)

@@ -6,7 +6,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/event"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
@@ -54,68 +53,33 @@ func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 		name = &n
 	}
 
-	// Build member map.
-	memberMap := make(bridgev2.ChatMemberMap)
-	if c.UserID != "" {
-		memberMap[networkid.UserID(c.UserID)] = bridgev2.ChatMember{
-			EventSender: bridgev2.EventSender{
-				Sender:      networkid.UserID(c.UserID),
-				IsFromMe:    true,
-				SenderLogin: c.UserLogin.ID,
-			},
-			Membership: event.MembershipJoin,
-		}
+	var members *bridgev2.ChatMemberList
+	if ok {
+		members = c.chatMembers(ctx, ch)
+	} else {
+		members = c.chatMembers(ctx, nil)
 	}
-
-	var otherUserID networkid.UserID
 
 	if ok && ch.IsDM() {
 		otherID := dmOtherUserID(ch.Name, c.UserID)
 		if otherID != "" {
-			otherUserID = networkid.UserID(otherID)
-			memberMap[networkid.UserID(otherID)] = bridgev2.ChatMember{
-				EventSender: bridgev2.EventSender{Sender: networkid.UserID(otherID)},
-				Membership:  event.MembershipJoin,
-			}
 			// Use the other user's display name if the channel has no explicit display name.
 			if name == nil || *name == chID {
 				c.mu.RLock()
 				u, hasUser := c.users[otherID]
 				c.mu.RUnlock()
 				if hasUser {
-					n := u.DisplayName()
+					n := c.displayName(u)
 					name = &n
 				}
 			}
 		}
-	} else if ok && !ch.IsDM() && !ch.IsGroupDM() {
-		// For team channels, fetch member list for a more complete picture.
-		// This is best-effort; failures are non-fatal.
-		members, err := mattermost.GetChannelMembers(c.serverURL(), c.Token, chID)
-		if err == nil {
-			for _, m := range members {
-				if m.UserID == c.UserID {
-					continue
-				}
-				memberMap[networkid.UserID(m.UserID)] = bridgev2.ChatMember{
-					EventSender: bridgev2.EventSender{Sender: networkid.UserID(m.UserID)},
-					Membership:  event.MembershipJoin,
-				}
-			}
-		}
-	}
-
-	isFull := ok && ch.IsDM()
-	chatMembers := &bridgev2.ChatMemberList{
-		IsFull:      isFull,
-		MemberMap:   memberMap,
-		OtherUserID: otherUserID,
 	}
 
 	return &bridgev2.ChatInfo{
 		Name:    name,
 		Type:    &roomType,
-		Members: chatMembers,
+		Members: members,
 	}, nil
 }
 
@@ -141,20 +105,25 @@ func (c *MattermostClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 		c.mu.Unlock()
 	}
 
-	name := u.DisplayName()
-	info := &bridgev2.UserInfo{
-		Name: &name,
-	}
+	return c.userInfo(u), nil
+}
 
-	// Profile picture: fetched via the authenticated image endpoint.
-	avatarURL := mattermost.ProfileImageURL(c.serverURL(), userID)
+// userInfo is the ghost profile for a Mattermost user. GetUserInfo, member
+// syncs and user_updated events all use it, so a ghost's name is always the
+// same function of the Mattermost profile.
+func (c *MattermostClient) userInfo(u *mattermost.User) *bridgev2.UserInfo {
+	name := c.displayName(u)
+	info := &bridgev2.UserInfo{Name: &name}
+
+	// Profile picture: fetched via the authenticated image endpoint. The ID
+	// is stable per user, so repeating it does not re-upload the image.
+	avatarURL := mattermost.ProfileImageURL(c.serverURL(), u.ID)
 	token := c.Token
 	info.Avatar = &bridgev2.Avatar{
-		ID: networkid.AvatarID(userID + "_avatar"),
+		ID: networkid.AvatarID(u.ID + "_avatar"),
 		Get: func(ctx context.Context) ([]byte, error) {
 			return fetchImage(ctx, avatarURL, token)
 		},
 	}
-
-	return info, nil
+	return info
 }

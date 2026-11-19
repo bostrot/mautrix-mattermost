@@ -194,6 +194,11 @@ func (c *Client) parseEvent(raw []byte) {
 	case "direct_added":
 		c.Events <- &DirectAddedEvent{ChannelID: env.Broadcast.ChannelID}
 
+	case "user_added", "user_removed":
+		if evt := channelMemberEvent(env); evt != nil {
+			c.Events <- evt
+		}
+
 	case "status_change":
 		c.Events <- &StatusChangeEvent{
 			UserID: strFromData(env.Data, "user_id"),
@@ -237,6 +242,25 @@ func channelsViewedEvent(data map[string]interface{}) *ChannelsViewedEvent {
 		return nil
 	}
 	return &ChannelsViewedEvent{Times: times}
+}
+
+// channelMemberEvent decodes "user_added" and "user_removed". Mattermost
+// sends both to the channel (channel in the broadcast, user in the data) and
+// sends "user_removed" to the removed user as well (channel in the data, user
+// in the broadcast).
+func channelMemberEvent(env WSEvent) *ChannelMemberEvent {
+	channelID := strFromData(env.Data, "channel_id")
+	if channelID == "" {
+		channelID = env.Broadcast.ChannelID
+	}
+	userID := strFromData(env.Data, "user_id")
+	if userID == "" {
+		userID = env.Broadcast.UserID
+	}
+	if channelID == "" || userID == "" {
+		return nil
+	}
+	return &ChannelMemberEvent{ChannelID: channelID, UserID: userID, Added: env.Event == "user_added"}
 }
 
 // --- helpers ---

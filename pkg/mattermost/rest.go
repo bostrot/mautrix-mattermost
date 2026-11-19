@@ -67,6 +67,88 @@ func GetUser(serverURL, token, userID string) (*User, error) {
 	return &u, nil
 }
 
+// NameDisplaySettings is how the server names users: its default
+// (TeammateNameDisplay) and whether users may override it.
+type NameDisplaySettings struct {
+	Default string
+	Locked  bool
+}
+
+// GetNameDisplaySettings reads the server's name display settings from the
+// client config, which any logged-in user may read.
+func GetNameDisplaySettings(serverURL, token string) (NameDisplaySettings, error) {
+	var cfg map[string]string
+	if err := doGet(serverURL, token, "/api/v4/config/client?format=old", &cfg); err != nil {
+		return NameDisplaySettings{}, err
+	}
+	return NameDisplaySettings{
+		Default: cfg["TeammateNameDisplay"],
+		Locked:  cfg["LockTeammateNameDisplay"] == "true",
+	}, nil
+}
+
+// GetNameFormatPreference returns the logged-in user's own name display
+// preference, or "" when they have not set one. Mattermost answers an unset
+// preference with app.preference.get.app_error (HTTP 400 on 12.x, 404 on
+// older servers); any other failure is returned.
+func GetNameFormatPreference(serverURL, token string) (string, error) {
+	const path = "/api/v4/users/me/preferences/display_settings/name/name_format"
+	req, err := http.NewRequest("GET", normalizeURL(serverURL)+path, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := newClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		var apiErr struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(body, &apiErr)
+		if apiErr.ID == "app.preference.get.app_error" || resp.StatusCode == http.StatusNotFound {
+			return "", nil
+		}
+		return "", fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(body))
+	}
+	var pref struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(body, &pref); err != nil {
+		return "", fmt.Errorf("decode error from %s: %w", path, err)
+	}
+	return pref.Value, nil
+}
+
+// GetUsersByIDs fetches the profiles for a list of user IDs in one request.
+// IDs with no matching user are simply absent from the result.
+func GetUsersByIDs(serverURL, token string, userIDs []string) ([]*User, error) {
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+	var out []*User
+	if err := doPost(serverURL, token, "/api/v4/users/ids", userIDs, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetUsersByUsernames fetches the profiles for a list of usernames in one
+// request. Usernames with no matching user are simply absent from the result.
+func GetUsersByUsernames(serverURL, token string, usernames []string) ([]*User, error) {
+	if len(usernames) == 0 {
+		return nil, nil
+	}
+	var out []*User
+	if err := doPost(serverURL, token, "/api/v4/users/usernames", usernames, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GetTeams returns the list of teams the authenticated user belongs to.
 func GetTeams(serverURL, token, userID string) ([]*Team, error) {
 	var teams []*Team

@@ -54,6 +54,23 @@ Send `login` to the bridge bot. Two methods are available:
 - **Personal Access Token** — server URL + PAT (recommended; generate one in Mattermost under *Profile → Security → Personal Access Tokens*)
 - **Email & password** — server URL + email + password (may be blocked by Cloudflare or disabled by the server admin)
 
+## Names and mentions
+
+`network.display_names` sets how Mattermost people are named in Matrix: their names and
+the text of `@mention` pills. Mentions themselves always go out and are matched by
+username, whatever is displayed.
+
+| Value | Name shown |
+|---|---|
+| `nickname` (default) | Nickname, then full name, then username, as the bridge has always named people |
+| `username` | `alice` |
+| `full_name` | `Alice Example`; falls back to the username |
+| `server` | As Mattermost shows them to you: your own *Display → Teammate Name Display* preference, else the server's setting (unless the server locks it) |
+
+The setting is read at connect, and every member's name is refreshed on the startup
+sync, so a change applies to existing names at the next restart. An unknown value
+stops the bridge at startup with an error naming the option.
+
 ## Development
 
 ```sh
