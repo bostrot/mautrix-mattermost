@@ -135,13 +135,7 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			return nil, wrapSendErr(fmt.Errorf("failed to upload media: %w", err))
 		}
 
-		// Caption is in Body when FileName is set separately (MSC2530).
-		caption := ""
-		if content.FileName != "" {
-			caption = content.Body
-		}
-
-		postID, err := mattermost.SendPost(c.serverURL(), c.Token, channelID, caption, rootID, fileID)
+		postID, err := mattermost.SendPost(c.serverURL(), c.Token, channelID, mediaCaption(content), rootID, fileID)
 		if err != nil {
 			return nil, wrapSendErr(err)
 		}
@@ -303,4 +297,12 @@ func wrapSendErr(err error) error {
 		return nil
 	}
 	return bridgev2.WrapErrorInStatus(err).WithIsCertain(true).WithSendNotice(true)
+}
+
+// mediaCaption is the text to post alongside an uploaded file. Under MSC2530
+// the body is a caption only when a separate filename is set and the body
+// differs from it; clients such as Beeper send body == filename when there is
+// no caption, and that filename must not be posted as message text.
+func mediaCaption(content *event.MessageEventContent) string {
+	return content.GetCaption()
 }
