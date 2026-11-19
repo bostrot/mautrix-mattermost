@@ -35,6 +35,11 @@ type MattermostClient struct {
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
 	done     chan struct{}                  // closed by Disconnect to stop reconnect loop
+
+	// previews caches resolved Mattermost permalink cards. A message must never
+	// fail because a preview could not be built, so failures are cached too.
+	previewMu sync.Mutex
+	previews  map[string]cachedPreview
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -280,10 +285,7 @@ func (c *MattermostClient) processEvents() {
 				ConvertEditFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *mattermost.Post) (*bridgev2.ConvertedEdit, error) {
 					var parts []*bridgev2.ConvertedEditPart
 					for _, dbMsg := range existing {
-						content := &event.MessageEventContent{
-							MsgType: event.MsgText,
-							Body:    data.Message,
-						}
+						content := c.editContent(ctx, data)
 						parts = append(parts, &bridgev2.ConvertedEditPart{
 							Part:    dbMsg,
 							Type:    event.EventMessage,
@@ -568,4 +570,15 @@ func (c *MattermostClient) sendNotice(channelID networkid.PortalID, body string)
 			}}}, nil
 		},
 	})
+}
+
+// editContent is the new content for an edited post. Linked posts are quoted
+// again, so an edit does not drop the quote the original message carried.
+func (c *MattermostClient) editContent(ctx context.Context, post *mattermost.Post) *event.MessageEventContent {
+	content := &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    post.Message,
+	}
+	c.attachPermalinkQuotes(ctx, content, post.Message)
+	return content
 }
