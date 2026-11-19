@@ -265,6 +265,13 @@ type UserUpdatedEvent struct {
 	User *User
 }
 
+// ChannelsViewedEvent signals the logged-in user read channels in Mattermost.
+// Times maps channel ID to the view time in milliseconds; 0 means "now"
+// (the server did not say).
+type ChannelsViewedEvent struct {
+	Times map[string]int64
+}
+
 // AuthErrorEvent signals the WS auth was rejected or a session was invalidated.
 type AuthErrorEvent struct {
 	Message string

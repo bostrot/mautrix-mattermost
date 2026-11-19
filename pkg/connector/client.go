@@ -40,6 +40,18 @@ type MattermostClient struct {
 	// fail because a preview could not be built, so failures are cached too.
 	previewMu sync.Mutex
 	previews  map[string]cachedPreview
+
+	// viewedAt is how far each channel is known read (see readsync.go).
+	// Guarded by mu.
+	viewedAt map[string]time.Time
+	// viewChannelFn, markThreadReadFn, threadRootFn, readNowFn and
+	// queueReceiptFn override the read sync requests, thread lookup, clock
+	// and event delivery in tests.
+	viewChannelFn    func(channelID string) error
+	markThreadReadFn func(teamID, rootID string, ms int64) error
+	threadRootFn     func(threadMXID string) string
+	readNowFn        func() time.Time
+	queueReceiptFn   func(bridgev2.RemoteEvent)
 }
 
 var _ bridgev2.NetworkAPI = (*MattermostClient)(nil)
@@ -419,6 +431,9 @@ func (c *MattermostClient) processEvents() {
 			}
 			c.users[evt.User.ID] = evt.User
 			c.mu.Unlock()
+
+		case *mattermost.ChannelsViewedEvent:
+			c.handleChannelsViewed(evt)
 
 		case *mattermost.AuthErrorEvent:
 			c.UserLogin.BridgeState.Send(status.BridgeState{
