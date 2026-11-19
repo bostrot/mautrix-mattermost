@@ -1,7 +1,11 @@
 // Package mattermost provides Go types and helpers for the Mattermost REST and WebSocket API.
 package mattermost
 
-import "time"
+import (
+	"encoding/json"
+	"errors"
+	"time"
+)
 
 // Post represents a Mattermost post (message).
 type Post struct {
@@ -16,6 +20,58 @@ type Post struct {
 	Type      string        `json:"type"`
 	FileIDs   []string      `json:"file_ids,omitempty"`
 	Metadata  *PostMetadata `json:"metadata,omitempty"`
+	// Props holds post properties; integrations (Google Meet, calendar and
+	// GitHub plugins, webhooks) put their content in props.attachments.
+	Props map[string]any `json:"props,omitempty"`
+}
+
+// MessageAttachment is a Slack-style attachment card (props.attachments).
+type MessageAttachment struct {
+	Fallback   string                    `json:"fallback"`
+	Pretext    string                    `json:"pretext"`
+	AuthorName string                    `json:"author_name"`
+	AuthorLink string                    `json:"author_link"`
+	Title      string                    `json:"title"`
+	TitleLink  string                    `json:"title_link"`
+	Text       string                    `json:"text"`
+	Fields     []MessageAttachmentField  `json:"fields"`
+	ImageURL   string                    `json:"image_url"`
+	Footer     string                    `json:"footer"`
+	Actions    []MessageAttachmentAction `json:"actions"`
+}
+
+// MessageAttachmentField is one titled value in an attachment.
+type MessageAttachmentField struct {
+	Title string `json:"title"`
+	Value any    `json:"value"`
+}
+
+// MessageAttachmentAction is an interactive button or menu.
+type MessageAttachmentAction struct {
+	Name string `json:"name"`
+}
+
+// Attachments decodes props.attachments. A field with an unexpected type is
+// left empty and the rest is kept (an integration sending a number where
+// Mattermost expects text should still show); anything else that does not
+// decode is ignored, so a broken integration cannot fail the post.
+func (p *Post) Attachments() []MessageAttachment {
+	raw, ok := p.Props["attachments"]
+	if !ok || raw == nil {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out []MessageAttachment
+	if err := json.Unmarshal(data, &out); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return nil
+		}
+	}
+	return out
 }
 
 // Timestamp returns the post creation time.

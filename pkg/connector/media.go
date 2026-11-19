@@ -101,9 +101,9 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		})
 	}
 
-	// Convert text body.
-	if post.Message != "" {
-		msgText := replaceEmojiShortcodes(post.Message)
+	// Convert text body: the message plus any integration attachments.
+	if text := postMarkdown(post); text != "" {
+		msgText := replaceEmojiShortcodes(text)
 		if len(parts) > 0 {
 			// Embed caption into the first attachment (Matrix caption convention / MSC2530).
 			firstContent := parts[0].Content
@@ -145,7 +145,7 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
 				MsgType: event.MsgText,
-				Body:    post.Message,
+				Body:    postMarkdown(post),
 			},
 		}}
 	}

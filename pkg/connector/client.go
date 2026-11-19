@@ -577,7 +577,7 @@ func (c *MattermostClient) sendNotice(channelID networkid.PortalID, body string)
 func (c *MattermostClient) editContent(ctx context.Context, post *mattermost.Post) *event.MessageEventContent {
 	content := &event.MessageEventContent{
 		MsgType: event.MsgText,
-		Body:    post.Message,
+		Body:    postMarkdown(post),
 	}
 	c.attachPermalinkQuotes(ctx, content, post.Message)
 	return content
