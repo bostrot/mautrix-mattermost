@@ -78,6 +78,12 @@ The setting is read at connect, and every member's name is refreshed on the star
 sync, so a change applies to existing names at the next restart. An unknown value
 stops the bridge at startup with an error naming the option.
 
+## Network icon
+
+`network.space_avatar` takes an MXC URI (`mxc://example.org/abc123`) to use as the
+Mattermost network icon, which clients show as the avatar of your personal Mattermost
+space. Empty (the default) sets none.
+
 ## Development
 
 ```sh
