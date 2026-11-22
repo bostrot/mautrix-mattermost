@@ -33,6 +33,8 @@ func TestWebviewCookieStep(t *testing.T) {
 	for _, u := range []string{
 		"https://mm.example.com/myteam/channels/town-square",
 		"https://mm.example.com/myteam/messages/@alice",
+		"https://mm.example.com/select_team",
+		"https://mm.example.com/create_team/display_name",
 	} {
 		if !re.MatchString(u) {
 			t.Errorf("pattern should match %q", u)
@@ -42,6 +44,8 @@ func TestWebviewCookieStep(t *testing.T) {
 		"https://mm.example.com/login",
 		"https://mm.example.com/oauth/github/complete",
 		"https://evil.example/mm.example.com/myteam/channels/x",
+		"https://mm.example.com/select_teams_page",
+		"https://mm.example.com/login?redirect_to=/select_team",
 	} {
 		if re.MatchString(u) {
 			t.Errorf("pattern should not match %q", u)

@@ -56,7 +56,7 @@ Send `login` to the bridge bot. These methods are available:
 | `mm-login-pat` | **Personal Access Token**: server URL + PAT (recommended; generate one in Mattermost under *Profile → Security → Personal Access Tokens*) |
 | `mm-login-password` | **Email & password**: server URL + email + password (may be blocked by Cloudflare or disabled by the server admin) |
 | `mm-login-cookie` | **Browser cookie**: server URL + the `MMAUTHTOKEN` cookie copied out of a signed-in browser (for SSO/GitLab/OIDC accounts) |
-| `mm-login-webview` | **Browser window**: server URL, then a `cookies` step for clients with a built-in browser (provisioning API only). The client opens `<server>/login`, waits for `<server>/<team>/channels/…` or `…/messages/…`, and hands back the `MMAUTHTOKEN` cookie, so SSO works without DevTools |
+| `mm-login-webview` | **Browser window**: server URL, then a `cookies` step for clients with a built-in browser (provisioning API only). The client opens `<server>/login`, waits for `<server>/<team>/channels/…`, `…/messages/…`, or `/select_team` for someone in no team yet, and hands back the `MMAUTHTOKEN` cookie, so SSO works without DevTools |
 
 The server URL may be typed without a scheme (`https://` is assumed), and a trailing
 `/login` is ignored. Servers under a subpath (`https://example.com/mattermost`) work.
