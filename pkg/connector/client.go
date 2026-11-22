@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -325,7 +326,7 @@ func (c *MattermostClient) processEvents() {
 				EventMeta: simplevent.EventMeta{
 					Type:       bridgev2.RemoteEventMessageRemove,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
-					Sender:     bridgev2.EventSender{IsFromMe: false},
+					Sender:     c.eventSender(evt.Post.UserID),
 					LogContext: func(z zerolog.Context) zerolog.Context { return z },
 				},
 				TargetMessage: networkid.MessageID(evt.Post.ID),
@@ -340,7 +341,7 @@ func (c *MattermostClient) processEvents() {
 				EventMeta: simplevent.EventMeta{
 					Type:       evtType,
 					PortalKey:  networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
-					Sender:     bridgev2.EventSender{Sender: networkid.UserID(evt.Reaction.UserID)},
+					Sender:     c.eventSender(evt.Reaction.UserID),
 					LogContext: func(z zerolog.Context) zerolog.Context { return z },
 				},
 				TargetMessage: networkid.MessageID(evt.Reaction.PostID),
@@ -352,22 +353,12 @@ func (c *MattermostClient) processEvents() {
 			if evt.UserID == c.UserID {
 				continue // don't echo own typing
 			}
-			portalKey := networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID}
+			// Read state comes from Mattermost itself (ChannelsViewedEvent),
+			// not from someone else typing.
 			c.UserLogin.QueueRemoteEvent(&mmTypingEvent{
 				channelID: networkid.PortalID(evt.ChannelID),
 				receiver:  c.UserLogin.ID,
 				senderID:  evt.UserID,
-			})
-			// Mark portal as read on behalf of the logged-in user when
-			// someone else starts typing — they're clearly looking at it.
-			c.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
-				EventMeta: simplevent.EventMeta{
-					Type:       bridgev2.RemoteEventReadReceipt,
-					PortalKey:  portalKey,
-					Sender:     bridgev2.EventSender{IsFromMe: true, SenderLogin: c.UserLogin.ID},
-					LogContext: func(z zerolog.Context) zerolog.Context { return z },
-				},
-				ReadUpTo: time.Now(),
 			})
 
 		case *mattermost.ChannelCreatedEvent:
@@ -521,28 +512,50 @@ func (c *MattermostClient) IsThisUser(ctx context.Context, userID networkid.User
 // dmOtherUserID extracts the other participant's ID from a DM channel name.
 // Mattermost DM channel names are "<userID1>__<userID2>".
 func dmOtherUserID(channelName, ownUserID string) string {
-	if len(channelName) < 54 { // 26 + 2 + 26 minimum
+	part1, part2, ok := strings.Cut(channelName, "__")
+	if !ok || part1 == "" || part2 == "" || strings.Contains(part2, "__") {
 		return ""
 	}
-	const sep = "__"
-	idx := len(channelName)/2 - 1
-	// find the __ separator around the middle
-	for i := 0; i < len(channelName)-1; i++ {
-		if channelName[i] == '_' && channelName[i+1] == '_' {
-			idx = i
-			break
+	switch ownUserID {
+	case part1:
+		return part2
+	case part2:
+		return part1
+	}
+	// Neither half is us: guessing would name the DM after the wrong person.
+	return ""
+}
+
+// dmOtherUser returns the other participant of a DM, asking the server for
+// the channel's members when the channel name does not tell.
+func (c *MattermostClient) dmOtherUser(ch *mattermost.Channel) string {
+	if id := dmOtherUserID(ch.Name, c.UserID); id != "" {
+		return id
+	}
+	members, err := c.fetchChannelMembers(ch.ID)
+	if err != nil {
+		return ""
+	}
+	for _, m := range members {
+		if m.UserID != "" && m.UserID != c.UserID {
+			return m.UserID
 		}
 	}
-	if idx <= 0 || idx+2 >= len(channelName) {
-		return ""
+	return ""
+}
+
+// eventSender attributes a Mattermost user's action, marking the logged-in
+// user's own reactions and deletions as theirs so they are double-puppeted
+// rather than sent by a ghost of themselves.
+func (c *MattermostClient) eventSender(userID string) bridgev2.EventSender {
+	sender := bridgev2.EventSender{Sender: networkid.UserID(userID)}
+	if c.UserID != "" && userID == c.UserID {
+		sender.IsFromMe = true
+		if c.UserLogin != nil {
+			sender.SenderLogin = c.UserLogin.ID
+		}
 	}
-	_ = sep
-	part1 := channelName[:idx]
-	part2 := channelName[idx+2:]
-	if part1 == ownUserID {
-		return part2
-	}
-	return part1
+	return sender
 }
 
 // resolveDisplayName returns a cached or freshly fetched display name for a Mattermost user.

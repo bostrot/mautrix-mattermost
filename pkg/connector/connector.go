@@ -13,6 +13,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
@@ -39,9 +40,14 @@ func (m *MattermostConnector) Start(ctx context.Context) error {
 }
 
 func (m *MattermostConnector) GetName() bridgev2.BridgeName {
+	var networkIcon id.ContentURIString
+	if m.Config != nil {
+		networkIcon = m.Config.SpaceAvatar
+	}
 	return bridgev2.BridgeName{
 		DisplayName:      "Mattermost",
 		NetworkURL:       "https://mattermost.com",
+		NetworkIcon:      networkIcon,
 		NetworkID:        "mattermost",
 		BeeperBridgeType: "github.com/bostrot/mautrix-mattermost",
 		DefaultPort:      29345,
@@ -70,6 +76,7 @@ func (m *MattermostConnector) GetConfig() (string, any, configupgrade.Upgrader) 
 // upgradeConfig carries the user's network options over the example config.
 func upgradeConfig(helper configupgrade.Helper) {
 	helper.Copy(configupgrade.Str, "display_names")
+	helper.Copy(configupgrade.Str|configupgrade.Null, "space_avatar")
 }
 
 func (m *MattermostConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -521,6 +528,9 @@ type Config struct {
 	// DisplayNames picks how Mattermost users are named in Matrix (see
 	// displaynames.go). Empty means "nickname".
 	DisplayNames string `yaml:"display_names"`
+	// SpaceAvatar is the MXC URI shown as the network icon: the avatar of each
+	// user's personal Mattermost space and of the m.bridge info. Empty for none.
+	SpaceAvatar id.ContentURIString `yaml:"space_avatar"`
 }
 
 const ExampleConfig = `# Mattermost Bridge Configuration
@@ -534,4 +544,8 @@ const ExampleConfig = `# Mattermost Bridge Configuration
 #               else the server's "Teammate Name Display" setting
 # Changes apply to existing names at the next bridge restart.
 display_names: nickname
+
+# The MXC URI used as the Mattermost network icon: the avatar of your personal
+# Mattermost space in Matrix. Leave empty for none.
+space_avatar:
 `

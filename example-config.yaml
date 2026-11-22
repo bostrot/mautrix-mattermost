@@ -9,3 +9,6 @@ network:
     #               else the server's "Teammate Name Display" setting
     # Changes apply to existing names at the next bridge restart.
     display_names: nickname
+    # The MXC URI used as the Mattermost network icon: the avatar of your personal
+    # Mattermost space in Matrix. Leave empty for none.
+    space_avatar:

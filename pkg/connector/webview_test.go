@@ -119,3 +119,13 @@ func TestWebviewCookieStep_WithoutScheme(t *testing.T) {
 		t.Errorf("cookie domain = %q", d)
 	}
 }
+
+func TestGetName_SpaceAvatar(t *testing.T) {
+	if icon := (&MattermostConnector{}).GetName().NetworkIcon; icon != "" {
+		t.Errorf("no config: NetworkIcon = %q, want empty", icon)
+	}
+	m := &MattermostConnector{Config: &Config{SpaceAvatar: "mxc://example.org/abc"}}
+	if icon := m.GetName().NetworkIcon; icon != "mxc://example.org/abc" {
+		t.Errorf("NetworkIcon = %q", icon)
+	}
+}
