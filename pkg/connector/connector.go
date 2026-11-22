@@ -490,8 +490,10 @@ func webviewCookieStep(rawURL string) (*bridgev2.LoginStep, string, error) {
 					CookieDomain: u.Hostname(),
 				}},
 			}},
-			// After login Mattermost lands on /<team>/channels/... or /<team>/messages/...
-			WaitForURLPattern: "^" + regexp.QuoteMeta(serverURL) + "/[^/]+/(channels|messages)/",
+			// After login Mattermost lands on /<team>/channels/... or
+			// /<team>/messages/..., or on /select_team or /create_team for
+			// someone in no team yet. All of them need a session.
+			WaitForURLPattern: "^" + regexp.QuoteMeta(serverURL) + "/([^/]+/(channels|messages)/|(select_team|create_team)([/?#]|$))",
 		},
 	}, serverURL, nil
 }
