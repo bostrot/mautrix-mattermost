@@ -61,7 +61,7 @@ func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 	}
 
 	if ok && ch.IsDM() {
-		otherID := dmOtherUserID(ch.Name, c.UserID)
+		otherID := c.dmOtherUser(ch)
 		if otherID != "" {
 			// Use the other user's display name if the channel has no explicit display name.
 			if name == nil || *name == chID {

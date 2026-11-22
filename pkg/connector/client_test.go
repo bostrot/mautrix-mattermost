@@ -8,6 +8,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+
+	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -183,6 +185,40 @@ func TestDMOtherUserID_TooShort(t *testing.T) {
 	got := dmOtherUserID("short", "me")
 	if got != "" {
 		t.Errorf("dmOtherUserID for short name should be empty, got %q", got)
+	}
+}
+
+func TestDMOtherUserID_OwnIDNotInChannelName(t *testing.T) {
+	id1 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	id2 := "bbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if got := dmOtherUserID(id1+"__"+id2, "cccccccccccccccccccccccccccc"); got != "" {
+		t.Errorf("dmOtherUserID should be empty if own ID is missing, got %q", got)
+	}
+}
+
+func TestDMOtherUser_FallsBackToMembers(t *testing.T) {
+	c := &MattermostClient{
+		UserID: "me",
+		channelMembersFn: func(channelID string) ([]*mattermost.ChannelMember, error) {
+			return []*mattermost.ChannelMember{
+				{ChannelID: channelID, UserID: "me"},
+				{ChannelID: channelID, UserID: "alice"},
+			}, nil
+		},
+	}
+	ch := &mattermost.Channel{ID: "dm1", Name: "someone__else", Type: "D"}
+	if got := c.dmOtherUser(ch); got != "alice" {
+		t.Errorf("dmOtherUser = %q, want alice from the member list", got)
+	}
+}
+
+func TestEventSender_OwnActionsAreFromMe(t *testing.T) {
+	c := &MattermostClient{UserID: "me"}
+	if s := c.eventSender("me"); !s.IsFromMe || s.Sender != "me" {
+		t.Errorf("own sender = %+v, want IsFromMe", s)
+	}
+	if s := c.eventSender("alice"); s.IsFromMe || s.Sender != "alice" {
+		t.Errorf("other sender = %+v, want not IsFromMe", s)
 	}
 }
 
