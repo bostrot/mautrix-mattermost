@@ -79,9 +79,39 @@ func TestWebviewStartWithOverride(t *testing.T) {
 }
 
 func TestWebviewCookieStep_InvalidURL(t *testing.T) {
-	for _, in := range []string{"", "mm.example.com", "ftp://mm.example.com", "https://"} {
+	for _, in := range []string{"", "   ", "ftp://mm.example.com", "https://", "https://mm example.com"} {
 		if _, _, err := webviewCookieStep(in); err == nil {
 			t.Errorf("expected error for %q", in)
 		}
+	}
+}
+
+func TestParseServerURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"mm.example.com":                       "https://mm.example.com",
+		" mm.example.com/ ":                    "https://mm.example.com",
+		"http://mm.example.com:8065":           "http://mm.example.com:8065",
+		"https://mm.example.com/login":         "https://mm.example.com",
+		"https://mm.example.com/login?extra=1": "https://mm.example.com",
+		"example.com/mattermost/login#x":       "https://example.com/mattermost",
+		"https://example.com/mattermost/":      "https://example.com/mattermost",
+	} {
+		got, err := parseServerURL(in)
+		if err != nil || got != want {
+			t.Errorf("parseServerURL(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+}
+
+func TestWebviewCookieStep_WithoutScheme(t *testing.T) {
+	step, serverURL, err := webviewCookieStep("mm.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serverURL != "https://mm.example.com" || step.CookiesParams.URL != "https://mm.example.com/login" {
+		t.Errorf("serverURL = %q, url = %q", serverURL, step.CookiesParams.URL)
+	}
+	if d := step.CookiesParams.Fields[0].Sources[0].CookieDomain; d != "mm.example.com" {
+		t.Errorf("cookie domain = %q", d)
 	}
 }

@@ -173,6 +173,10 @@ func (p *PATLoginProcess) SubmitUserInput(ctx context.Context, input map[string]
 	if serverURL == "" || token == "" {
 		return nil, fmt.Errorf("server_url and token are required")
 	}
+	serverURL, err := parseServerURL(serverURL)
+	if err != nil {
+		return nil, err
+	}
 
 	// Verify the token by fetching /users/me.
 	userID, username, err := mattermost.GetSelf(serverURL, token)
@@ -261,6 +265,10 @@ func (p *PasswordLoginProcess) SubmitUserInput(ctx context.Context, input map[st
 	password := input["password"]
 	if serverURL == "" || email == "" || password == "" {
 		return nil, fmt.Errorf("server_url, email and password are required")
+	}
+	serverURL, err := parseServerURL(serverURL)
+	if err != nil {
+		return nil, err
 	}
 
 	token, err := mattermost.LoginWithPassword(serverURL, email, password)
@@ -352,6 +360,10 @@ func (p *CookieLoginProcess) SubmitUserInput(ctx context.Context, input map[stri
 	token := input["token"]
 	if serverURL == "" || token == "" {
 		return nil, fmt.Errorf("server_url and token are required")
+	}
+	serverURL, err := parseServerURL(serverURL)
+	if err != nil {
+		return nil, err
 	}
 
 	// MMAUTHTOKEN is accepted as a Bearer token directly.
@@ -458,11 +470,11 @@ func (p *WebviewLoginProcess) SubmitCookies(ctx context.Context, cookies map[str
 // webviewCookieStep builds the cookies login step for the given server URL and
 // returns the normalized URL.
 func webviewCookieStep(rawURL string) (*bridgev2.LoginStep, string, error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, "", fmt.Errorf("invalid server URL %q", rawURL)
+	serverURL, err := parseServerURL(rawURL)
+	if err != nil {
+		return nil, "", err
 	}
-	serverURL := strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
+	u, _ := url.Parse(serverURL)
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeCookies,
 		StepID:       "com.bostrot.mattermost.webview_cookie",
@@ -482,6 +494,24 @@ func webviewCookieStep(rawURL string) (*bridgev2.LoginStep, string, error) {
 			WaitForURLPattern: "^" + regexp.QuoteMeta(serverURL) + "/[^/]+/(channels|messages)/",
 		},
 	}, serverURL, nil
+}
+
+// parseServerURL normalizes the server URL a user typed: https:// is assumed
+// when no scheme is given (people type "mm.example.com"), and a trailing slash,
+// a pasted /login page, query and fragment are dropped. A subpath is kept for
+// servers that live under one.
+func parseServerURL(rawURL string) (string, error) {
+	raw := strings.TrimSpace(rawURL)
+	if raw != "" && !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", fmt.Errorf("invalid server URL %q", rawURL)
+	}
+	path := strings.TrimRight(u.Path, "/")
+	path = strings.TrimSuffix(path, "/login")
+	return strings.TrimRight(u.Scheme+"://"+u.Host+path, "/"), nil
 }
 
 // Config holds the bridge-specific configuration.
