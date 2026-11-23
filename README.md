@@ -3,7 +3,7 @@
 
 A Matrix–[Mattermost](https://mattermost.com) bridge built on the [mautrix bridgev2](https://github.com/mautrix/go) framework.
 
-Bridges text, media, reactions, edits, deletions, replies, emoji shortcodes, typing notifications, and backfill. Supports Personal Access Token (PAT), email+password and browser (SSO) login. All teams, channels, and DMs are bridged automatically on login.
+Bridges text, media, reactions, edits, deletions, replies, threads, emoji shortcodes, typing notifications, and backfill. Supports Personal Access Token (PAT), email+password and browser (SSO) login. All teams, channels, and DMs are bridged automatically on login.
 
 ## Requirements
 
@@ -60,6 +60,18 @@ Send `login` to the bridge bot. These methods are available:
 
 The server URL may be typed without a scheme (`https://` is assumed), and a trailing
 `/login` is ignored. Servers under a subpath (`https://example.com/mattermost`) work.
+
+## Threads
+
+Mattermost thread replies appear in Matrix threads, including replies imported
+through channel backfill. For Matrix replies with no known thread root, the
+bridge looks up the target post in Mattermost and uses its thread root when
+available. If the lookup fails, the bridge sends the reply using the target
+post ID. Thanks to @ljlongwing for the reply lookup in [PR #4](https://github.com/bostrot/mautrix-mattermost/pull/4).
+
+For newly bridged posts with files, the first successful attachment upload
+uses an empty part ID so the attachment can serve as a thread root. This applies
+even if an earlier upload failed. Existing attachment part IDs are not migrated.
 
 ## Names and mentions
 

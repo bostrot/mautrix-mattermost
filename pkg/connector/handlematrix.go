@@ -49,6 +49,7 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		DeleteForMe:         true,
 		Edit:                event.CapLevelFullySupported,
 		Reply:               event.CapLevelFullySupported,
+		Thread:              event.CapLevelFullySupported,
 		Reaction:            event.CapLevelFullySupported,
 		TypingNotifications: true,
 		File: event.FileFeatureMap{
@@ -60,6 +61,32 @@ func (c *MattermostClient) GetCapabilities(ctx context.Context, portal *bridgev2
 			event.CapMsgGIF:     &event.FileFeatures{MimeTypes: map[string]event.CapabilitySupportLevel{"image/*": event.CapLevelFullySupported, "video/*": event.CapLevelFullySupported}},
 		},
 	}
+}
+
+// outboundRootID selects the flat Mattermost thread root for a Matrix message.
+func (c *MattermostClient) outboundRootID(msg *bridgev2.MatrixMessage) string {
+	if target := msg.ThreadRoot; target != nil {
+		if target.ThreadRoot != "" {
+			return string(target.ThreadRoot)
+		}
+		return string(target.ID)
+	}
+
+	target := msg.ReplyTo
+	if target == nil {
+		return ""
+	}
+	if target.ThreadRoot != "" {
+		return string(target.ThreadRoot)
+	}
+
+	// Older reply targets may lack stored thread metadata. Mattermost expects
+	// a flat thread root, so resolve the target before sending the reply.
+	post, err := mattermost.GetPost(c.serverURL(), c.Token, string(target.ID))
+	if err == nil && post.RootID != "" {
+		return post.RootID
+	}
+	return string(target.ID)
 }
 
 // HandleMatrixMessage bridges a message from Matrix → Mattermost.
@@ -77,10 +104,7 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	channelID := string(msg.Portal.ID)
-	var rootID string
-	if msg.ReplyTo != nil {
-		rootID = string(msg.ReplyTo.ID)
-	}
+	rootID := c.outboundRootID(msg)
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
@@ -96,8 +120,9 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		return &bridgev2.MatrixMessageResponse{
 			DB: &database.Message{
-				ID:       networkid.MessageID(postID),
-				SenderID: networkid.UserID(c.UserID),
+				ID:         networkid.MessageID(postID),
+				SenderID:   networkid.UserID(c.UserID),
+				ThreadRoot: networkid.MessageID(rootID),
 			},
 		}, nil
 
@@ -150,8 +175,9 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		return &bridgev2.MatrixMessageResponse{
 			DB: &database.Message{
-				ID:       networkid.MessageID(postID),
-				SenderID: networkid.UserID(c.UserID),
+				ID:         networkid.MessageID(postID),
+				SenderID:   networkid.UserID(c.UserID),
+				ThreadRoot: networkid.MessageID(rootID),
 			},
 		}, nil
 

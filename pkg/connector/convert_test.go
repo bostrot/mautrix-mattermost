@@ -84,11 +84,14 @@ func TestConvertPost_WithThreadReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cm.ReplyTo == nil {
-		t.Fatal("expected ReplyTo to be set for thread reply")
+	if cm.ThreadRoot == nil || *cm.ThreadRoot != networkid.MessageID("rootPostID") {
+		t.Fatalf("expected ThreadRoot rootPostID, got %v", cm.ThreadRoot)
 	}
-	if cm.ReplyTo.MessageID != networkid.MessageID("rootPostID") {
-		t.Fatalf("unexpected ReplyTo ID: %v", cm.ReplyTo.MessageID)
+	// The framework builds the reply fallback from the thread relation; setting
+	// ReplyTo here would override it with the root instead of the previous
+	// thread event.
+	if cm.ReplyTo != nil {
+		t.Fatalf("expected nil ReplyTo for a thread reply, got %+v", cm.ReplyTo)
 	}
 }
 
