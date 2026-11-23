@@ -30,10 +30,26 @@ func mediaMsgType(contentType string) event.MessageType {
 	}
 }
 
+// postThreadRoot returns the Matrix thread root for a Mattermost post.
+//
+// Mattermost only has one level of threading: every reply carries root_id
+// pointing at the thread root. That maps to a Matrix thread (ThreadRoot). No
+// ReplyTo is set: bridgev2 builds the thread fallback reply itself from the
+// thread root and previous thread event, which points at the right event even
+// when a later reply in the same thread is the fallback target.
+func postThreadRoot(post *mattermost.Post) *networkid.MessageID {
+	if post == nil || post.RootID == "" {
+		return nil
+	}
+	root := networkid.MessageID(post.RootID)
+	return &root
+}
+
 // convertPost converts a Mattermost post (text + file attachments) into Matrix message parts.
 // intent is used to upload media to the homeserver; it may be nil (e.g. in unit tests without attachments).
 func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.MatrixAPI, roomID id.RoomID, post *mattermost.Post) (*bridgev2.ConvertedMessage, error) {
 	var parts []*bridgev2.ConvertedMessagePart
+	threadRoot := postThreadRoot(post)
 
 	// Convert file attachments.
 	files := resolveFiles(post)
@@ -93,8 +109,15 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		if fi.Height > 0 {
 			content.Info.Height = fi.Height
 		}
+		// bridgev2 synthesizes missing thread-root event IDs with an empty part ID.
+		// The first successful upload gets that ID, even if an earlier upload failed.
+		// Existing bridged attachment IDs are unaffected.
+		partID := networkid.PartID("att_" + fi.ID)
+		if len(parts) == 0 {
+			partID = ""
+		}
 		parts = append(parts, &bridgev2.ConvertedMessagePart{
-			ID:      networkid.PartID("att_" + fi.ID),
+			ID:      partID,
 			Type:    event.EventMessage,
 			Content: content,
 		})
@@ -120,12 +143,8 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 			// Quote linked Mattermost posts under the link. Best effort: the
 			// message is sent either way.
 			c.attachPermalinkQuotes(ctx, &textContent, post.Message)
-			var replyTo *networkid.MessageOptionalPartID
-			if post.RootID != "" {
-				replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-			}
 			cm := &bridgev2.ConvertedMessage{
-				ReplyTo: replyTo,
+				ThreadRoot: threadRoot,
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					ID:      networkid.PartID(""),
 					Type:    event.EventMessage,
@@ -148,14 +167,9 @@ func (c *MattermostClient) convertPost(ctx context.Context, intent bridgev2.Matr
 		}}
 	}
 
-	var replyTo *networkid.MessageOptionalPartID
-	if post.RootID != "" {
-		replyTo = &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(post.RootID)}
-	}
-
 	return &bridgev2.ConvertedMessage{
-		ReplyTo: replyTo,
-		Parts:   parts,
+		ThreadRoot: threadRoot,
+		Parts:      parts,
 	}, nil
 }
 

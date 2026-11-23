@@ -55,11 +55,14 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 
 		converted, convErr := c.convertPost(ctx, intent, params.Portal.MXID, post)
 		if convErr != nil {
-			converted = &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
-				ID:      networkid.PartID(""),
-				Type:    event.EventMessage,
-				Content: &event.MessageEventContent{MsgType: event.MsgText, Body: postMarkdown(post)},
-			}}}
+			converted = &bridgev2.ConvertedMessage{
+				ThreadRoot: postThreadRoot(post),
+				Parts: []*bridgev2.ConvertedMessagePart{{
+					ID:      networkid.PartID(""),
+					Type:    event.EventMessage,
+					Content: &event.MessageEventContent{MsgType: event.MsgText, Body: postMarkdown(post)},
+				}},
+			}
 		}
 
 		backfill = append(backfill, &bridgev2.BackfillMessage{
