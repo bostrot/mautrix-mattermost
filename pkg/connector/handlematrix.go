@@ -103,6 +103,9 @@ func (c *MattermostClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		return nil, wrapSendErr(fmt.Errorf("empty message content"))
 	}
 
+	if isTeamPortal(msg.Portal.ID) {
+		return nil, wrapSendErr(fmt.Errorf("team spaces have no Mattermost channel to post in"))
+	}
 	channelID := string(msg.Portal.ID)
 	rootID := c.outboundRootID(msg)
 
@@ -261,8 +264,8 @@ func (c *MattermostClient) HandleMatrixReactionRemove(ctx context.Context, msg *
 
 // HandleMatrixTyping forwards a Matrix typing event to Mattermost.
 func (c *MattermostClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixTyping) error {
-	if !msg.IsTyping {
-		return nil // Mattermost has no stop-typing REST endpoint
+	if !msg.IsTyping || isTeamPortal(msg.Portal.ID) {
+		return nil // Mattermost has no stop-typing REST endpoint; spaces have no channel
 	}
 	c.mu.RLock()
 	cl := c.client

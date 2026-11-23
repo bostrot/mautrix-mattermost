@@ -13,6 +13,9 @@ import (
 
 // FetchMessages implements bridgev2.BackfillingNetworkAPI for paginated history.
 func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
+	if isTeamPortal(params.Portal.ID) {
+		return &bridgev2.FetchMessagesResponse{}, nil // spaces have no timeline
+	}
 	channelID := string(params.Portal.ID)
 
 	var beforePostID string

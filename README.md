@@ -5,6 +5,8 @@ A Matrix–[Mattermost](https://mattermost.com) bridge built on the [mautrix bri
 
 Bridges text, media, reactions, edits, deletions, replies, threads, emoji shortcodes, typing notifications, and backfill. Supports Personal Access Token (PAT), email+password and browser (SSO) login. All teams, channels, and DMs are bridged automatically on login.
 
+Leaving a Mattermost team can leave its Matrix space visible.
+
 ## Requirements
 
 - Go 1.26+ (for building from source)

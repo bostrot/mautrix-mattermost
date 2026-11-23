@@ -36,6 +36,9 @@ func (c *MattermostClient) HandleMatrixReadReceipt(ctx context.Context, msg *bri
 		// Mattermost already treats as reading the channel.
 		return nil
 	}
+	if isTeamPortal(msg.Portal.ID) {
+		return nil
+	}
 	channelID := string(msg.Portal.ID)
 	if thread := msg.Receipt.ThreadID; thread != "" && thread != "main" {
 		return c.markThreadRead(ctx, channelID, string(thread), msg.ReadUpTo)
