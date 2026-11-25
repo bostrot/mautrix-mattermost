@@ -200,10 +200,21 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 	// Before anything is synced, so names come out in the right format.
 	c.resolveNameFormat(c.UserLogin.Log)
 	c.done = make(chan struct{})
-	go c.connectLoop()
+	go c.connectLoop(context.WithoutCancel(ctx))
 }
 
-func (c *MattermostClient) connectLoop() {
+func (c *MattermostClient) connectLoop(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	hints := make(chan channelLifecycleHint, 100)
+	go c.runChannelLifecycle(ctx, hints)
+	submit := func(hint channelLifecycleHint) {
+		select {
+		case hints <- hint:
+		default:
+			c.UserLogin.Log.Warn().Str("channel_id", hint.channelID).Msg("Channel lifecycle queue full")
+		}
+	}
 	backoff := 5 * time.Second
 	failures := 0
 	for {
@@ -216,7 +227,7 @@ func (c *MattermostClient) connectLoop() {
 			c.mu.Lock()
 			c.client = cl
 			c.mu.Unlock()
-			c.processEvents() // blocks until WS closes
+			c.processEvents(submit) // blocks until WS closes
 			backoff = 5 * time.Second
 		}
 		// Mattermost closes the WebSocket without an auth error event when the
@@ -232,6 +243,8 @@ func (c *MattermostClient) connectLoop() {
 		select {
 		case <-c.done:
 			return
+		case <-ctx.Done():
+			return
 		case <-time.After(backoff):
 			if backoff < 5*time.Minute {
 				backoff *= 2
@@ -240,7 +253,7 @@ func (c *MattermostClient) connectLoop() {
 	}
 }
 
-func (c *MattermostClient) processEvents() {
+func (c *MattermostClient) processEvents(submitLifecycle func(channelLifecycleHint)) {
 	for raw := range c.client.Events {
 		switch evt := raw.(type) {
 		case *mattermost.HelloEvent:
@@ -408,14 +421,10 @@ func (c *MattermostClient) processEvents() {
 			})
 
 		case *mattermost.ChannelDeletedEvent:
-			c.mu.Lock()
-			if c.channels != nil {
-				delete(c.channels, evt.ChannelID)
-			}
-			c.mu.Unlock()
-			c.UserLogin.QueueRemoteEvent(&mmChatDeleteEvent{
-				portalKey: networkid.PortalKey{ID: networkid.PortalID(evt.ChannelID), Receiver: c.UserLogin.ID},
-			})
+			submitLifecycle(channelLifecycleHint{channelID: evt.ChannelID, allowDelete: true})
+
+		case *mattermost.ChannelRestoredEvent:
+			submitLifecycle(channelLifecycleHint{channelID: evt.ChannelID})
 
 		case *mattermost.ChannelMemberEvent:
 			c.handleChannelMemberEvent(evt)

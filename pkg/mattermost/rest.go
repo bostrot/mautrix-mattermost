@@ -2,6 +2,7 @@ package mattermost
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -16,6 +18,64 @@ import (
 // ErrUnauthorized is returned (wrapped) when Mattermost rejects the token with HTTP 401,
 // e.g. because the session expired or was revoked.
 var ErrUnauthorized = errors.New("mattermost: unauthorized")
+
+// ErrIDChannelGetExisting is the Mattermost server error id returned by
+// GET /api/v4/channels/{id} when the authoritative server has no channel with
+// that id. It is the only 404 payload that may be treated as proof of a
+// permanent deletion; proxies, permission walls and generic 404s are not.
+const ErrIDChannelGetExisting = "app.channel.get.existing.app_error"
+
+// HTTPError preserves the non-2xx response details (status code, request path and
+// response body) so callers can classify failures instead of parsing error strings.
+// A 401 response also unwraps to ErrUnauthorized.
+type HTTPError struct {
+	StatusCode int
+	Path       string
+	Body       string
+	// ErrorID is Mattermost's machine-readable error id from the JSON body
+	// ("id"), empty when the body is absent or not JSON.
+	ErrorID string
+	// BodyStatusCode is the status_code declared inside the JSON body, 0 when
+	// absent or undecodable. It must be consistent with StatusCode whenever it
+	// is used as evidence.
+	BodyStatusCode int
+}
+
+// IsAuthoritativeChannelNotFound reports whether this error is Mattermost's
+// explicit "channel id does not exist" answer for exactly channelID: HTTP 404 on
+// the canonical GET /api/v4/channels/{id} path, the
+// ErrIDChannelGetExisting error id, and (when present) a matching status_code
+// in the body. Anything else is not proof of a permanent deletion.
+func (e *HTTPError) IsAuthoritativeChannelNotFound(channelID string) bool {
+	if e == nil || channelID == "" {
+		return false
+	}
+	if e.StatusCode != http.StatusNotFound {
+		return false
+	}
+	if e.Path != channelPath(channelID) {
+		return false
+	}
+	if e.ErrorID != ErrIDChannelGetExisting {
+		return false
+	}
+	if e.BodyStatusCode != 0 && e.BodyStatusCode != http.StatusNotFound {
+		return false
+	}
+	return true
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d from %s: %s", e.StatusCode, e.Path, e.Body)
+}
+
+// Unwrap lets errors.Is(err, ErrUnauthorized) match a 401 HTTPError.
+func (e *HTTPError) Unwrap() error {
+	if e.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	return nil
+}
 
 // normalizeURL trims any trailing slashes from a server URL.
 func normalizeURL(serverURL string) string {
@@ -51,8 +111,16 @@ func LoginWithPassword(serverURL, email, password string) (string, error) {
 
 // GetSelf returns the authenticated user's ID and username by calling /api/v4/users/me.
 func GetSelf(serverURL, token string) (id, username string, err error) {
+	return getSelfContext(context.Background(), serverURL, token, false)
+}
+
+func GetSelfContext(ctx context.Context, serverURL, token string) (id, username string, err error) {
+	return getSelfContext(ctx, serverURL, token, true)
+}
+
+func getSelfContext(ctx context.Context, serverURL, token string, rejectRedirects bool) (id, username string, err error) {
 	var u User
-	if err = doGet(serverURL, token, "/api/v4/users/me", &u); err != nil {
+	if err = doGetWithRedirectPolicy(ctx, serverURL, token, "/api/v4/users/me", &u, rejectRedirects); err != nil {
 		return
 	}
 	return u.ID, u.Username, nil
@@ -180,9 +248,21 @@ func GetPost(serverURL, token, postID string) (*Post, error) {
 	return &p, nil
 }
 
+func channelPath(channelID string) string {
+	return "/api/v4/channels/" + url.PathEscape(channelID)
+}
+
 func GetChannel(serverURL, token, channelID string) (*Channel, error) {
+	return getChannelContext(context.Background(), serverURL, token, channelID, false)
+}
+
+func GetChannelContext(ctx context.Context, serverURL, token, channelID string) (*Channel, error) {
+	return getChannelContext(ctx, serverURL, token, channelID, true)
+}
+
+func getChannelContext(ctx context.Context, serverURL, token, channelID string, rejectRedirects bool) (*Channel, error) {
 	var ch Channel
-	if err := doGet(serverURL, token, "/api/v4/channels/"+channelID, &ch); err != nil {
+	if err := doGetWithRedirectPolicy(ctx, serverURL, token, channelPath(channelID), &ch, rejectRedirects); err != nil {
 		return nil, err
 	}
 	return &ch, nil
@@ -301,28 +381,49 @@ func newClient() *http.Client {
 }
 
 func doGet(serverURL, token, path string, out any) error {
-	req, err := http.NewRequest("GET", normalizeURL(serverURL)+path, nil)
+	return doGetContext(context.Background(), serverURL, token, path, out)
+}
+
+func doGetContext(ctx context.Context, serverURL, token, path string, out any) error {
+	return doGetWithRedirectPolicy(ctx, serverURL, token, path, out, false)
+}
+
+func doGetWithRedirectPolicy(ctx context.Context, serverURL, token, path string, out any, rejectRedirects bool) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalizeURL(serverURL)+path, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := newClient().Do(req)
+	client := newClient()
+	if rejectRedirects {
+		// Deletion evidence must come from the exact authenticated endpoint,
+		// never from a redirect target. Ordinary API GETs keep normal behavior.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusUnauthorized {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%w: HTTP 401 from %s: %s", ErrUnauthorized, path, string(body))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
 	}
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, path, string(body))
+	if resp.StatusCode != http.StatusOK {
+		httpErr := &HTTPError{StatusCode: resp.StatusCode, Path: path, Body: string(body)}
+		var payload struct {
+			ID         string `json:"id"`
+			StatusCode int    `json:"status_code"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			httpErr.ErrorID = payload.ID
+			httpErr.BodyStatusCode = payload.StatusCode
+		}
+		return httpErr
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode error from %s: %w", path, err)
 	}
 	return nil

@@ -169,7 +169,7 @@ func TestProcessEventsChannelsViewedQueuesReceipt(t *testing.T) {
 	c.client = &mattermost.Client{Events: feed}
 	feed <- &mattermost.ChannelsViewedEvent{Times: map[string]int64{"chan-ws": 1794950000000}}
 	close(feed)
-	c.processEvents() // returns when the feed closes
+	c.processEvents(nil) // returns when the feed closes
 	if len(got) != 1 || got[0].GetType() != bridgev2.RemoteEventReadReceipt {
 		t.Fatalf("queued %v, want one read receipt", got)
 	}

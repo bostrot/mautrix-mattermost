@@ -186,10 +186,21 @@ func (c *Client) parseEvent(raw []byte) {
 		}
 
 	case "channel_deleted":
-		c.Events <- &ChannelDeletedEvent{
-			ChannelID: env.Broadcast.ChannelID,
-			TeamID:    strFromData(env.Data, "team_id"),
+		channelID := strFromData(env.Data, "channel_id")
+		if channelID == "" {
+			return
 		}
+		c.Events <- &ChannelDeletedEvent{
+			ChannelID: channelID,
+			TeamID:    env.Broadcast.TeamID,
+		}
+
+	case "channel_restored":
+		channelID := strFromData(env.Data, "channel_id")
+		if channelID == "" {
+			return
+		}
+		c.Events <- &ChannelRestoredEvent{ChannelID: channelID, TeamID: env.Broadcast.TeamID}
 
 	case "direct_added":
 		c.Events <- &DirectAddedEvent{ChannelID: env.Broadcast.ChannelID}

@@ -178,7 +178,7 @@ func TestTeamUpdatesQueueSpaceResync(t *testing.T) {
 	c.client = &mattermost.Client{Events: feed}
 	feed <- &mattermost.TeamUpdatedEvent{Team: &mattermost.Team{ID: "t1", DisplayName: "Renamed"}}
 	close(feed)
-	c.processEvents()
+	c.processEvents(nil)
 	if len(got) != 1 {
 		t.Fatalf("queued %d events", len(got))
 	}

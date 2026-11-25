@@ -148,6 +148,7 @@ func (u *User) NameFor(format string) string {
 // Channel represents a Mattermost channel.
 // Type: "O" = public, "P" = private, "D" = direct (1:1), "G" = group DM.
 type Channel struct {
+	DeleteAt    int64  `json:"delete_at"`
 	ID          string `json:"id"`
 	TeamID      string `json:"team_id"`
 	Type        string `json:"type"`
@@ -279,6 +280,12 @@ type ChannelUpdatedEvent struct {
 
 // ChannelDeletedEvent signals a channel was deleted.
 type ChannelDeletedEvent struct {
+	ChannelID string
+	TeamID    string
+}
+
+// ChannelRestoredEvent signals a channel was restored.
+type ChannelRestoredEvent struct {
 	ChannelID string
 	TeamID    string
 }
