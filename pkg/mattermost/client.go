@@ -1,8 +1,10 @@
 package mattermost
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -23,6 +25,10 @@ type Client struct {
 	Events    chan any
 
 	wmu sync.Mutex // guards all WS writes
+
+	closeMu            sync.Mutex
+	closed             bool
+	reconnectRequested bool
 }
 
 // NewClient creates a new Mattermost WS client. serverURL must be the base HTTP(S) URL.
@@ -36,10 +42,32 @@ func NewClient(serverURL, token string) *Client {
 
 // Connect opens the WebSocket connection and authenticates.
 func (c *Client) Connect() error {
+	return c.ConnectContext(context.Background())
+}
+
+func (c *Client) ConnectContext(ctx context.Context) error {
 	wsURL := httpToWS(normalizeURL(c.ServerURL)) + "/api/v4/websocket"
 	fmt.Printf("[mm-ws] connecting to %s\n", wsURL)
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// Gorilla's context cancels the TCP dial, but cancellation without a
+	// deadline does not interrupt its HTTP upgrade read. Close the raw socket
+	// on cancellation until authentication has completed. The connector owns
+	// cancellation of established sockets after this function returns.
+	dialer := *websocket.DefaultDialer
+	var stopClose func() bool
+	dialer.NetDialContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, network, addr)
+		if err == nil {
+			stopClose = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, err
+	}
+	defer func() {
+		if stopClose != nil {
+			stopClose()
+		}
+	}()
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		fmt.Printf("[mm-ws] dial error: %v\n", err)
 		return err
@@ -60,6 +88,7 @@ func (c *Client) Connect() error {
 		"data":   map[string]string{"token": c.Token},
 	})
 	c.wmu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
 	err = conn.WriteMessage(websocket.TextMessage, authMsg)
 	c.wmu.Unlock()
 	if err != nil {
@@ -67,28 +96,50 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to send auth challenge: %w", err)
 	}
 
-	go c.readLoop()
-	go c.pingLoop()
+	done := make(chan struct{})
+	go c.readLoop(done)
+	go c.pingLoop(done)
 	return nil
 }
 
 // Close shuts down the WebSocket connection.
 func (c *Client) Close() {
-	if c.WS != nil {
-		c.WS.Close()
-	}
+	c.close(false)
 }
 
-func (c *Client) readLoop() {
+// CloseForReconnect marks only a successful local close for quiet reconnect.
+func (c *Client) CloseForReconnect() {
+	c.close(true)
+}
+
+func (c *Client) close(reconnect bool) {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed || c.WS == nil {
+		return
+	}
+	c.closed = true
+	c.reconnectRequested = c.WS.Close() == nil && reconnect
+}
+
+func (c *Client) ReconnectRequested() bool {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	return c.reconnectRequested
+}
+
+func (c *Client) readLoop(done chan<- struct{}) {
 	fmt.Printf("[mm-ws] readLoop started at %s\n", time.Now().Format(time.RFC3339))
 	defer func() {
 		fmt.Printf("[mm-ws] readLoop exiting at %s\n", time.Now().Format(time.RFC3339))
-		c.WS.Close()
+		c.Close()
+		close(done)
 		close(c.Events)
 	}()
 	for {
 		_, message, err := c.WS.ReadMessage()
 		if err != nil {
+			c.Close()
 			fmt.Printf("[mm-ws] read error: %v\n", err)
 			return
 		}
@@ -97,15 +148,20 @@ func (c *Client) readLoop() {
 	}
 }
 
-func (c *Client) pingLoop() {
+func (c *Client) pingLoop(done <-chan struct{}) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		c.wmu.Lock()
-		err := c.WS.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
-		c.wmu.Unlock()
-		if err != nil {
+	for {
+		select {
+		case <-done:
 			return
+		case <-ticker.C:
+			c.wmu.Lock()
+			err := c.WS.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
+			c.wmu.Unlock()
+			if err != nil {
+				return
+			}
 		}
 	}
 }

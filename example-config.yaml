@@ -12,3 +12,7 @@ network:
     # The MXC URI used as the Mattermost network icon: the avatar of your personal
     # Mattermost space in Matrix. Leave empty for none.
     space_avatar:
+    # Poll for missed archive and restore events at this interval (e.g. 1m).
+    # An empty string disables polling.
+    # Use the final, non-redirecting server URL at login: safety probes refuse redirects.
+    channel_poll_interval: ""

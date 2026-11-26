@@ -36,7 +36,7 @@ type MattermostClient struct {
 	mu       sync.RWMutex
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
-	done     chan struct{}                  // closed by Disconnect to stop reconnect loop
+	cancel   context.CancelFunc             // stops the current connection and its workers
 
 	// previews caches resolved Mattermost permalink cards. A message must never
 	// fail because a preview could not be built, so failures are cached too.
@@ -193,23 +193,49 @@ func (c *MattermostClient) channelResyncEvent(ch *mattermost.Channel) *simpleven
 }
 
 func (c *MattermostClient) Connect(ctx context.Context) {
+	interval, err := c.networkConfig().channelPollInterval()
+	if err != nil {
+		c.UserLogin.Log.Error().Err(err).Msg("Invalid Mattermost poll configuration")
+		return
+	}
+	// Interactive logins pass a request context. Use the bridge lifetime so
+	// returning the login response does not stop the connection or poller.
+	if bridge := c.UserLogin.Bridge; bridge != nil && bridge.BackgroundCtx != nil {
+		ctx = c.UserLogin.Log.WithContext(bridge.BackgroundCtx)
+	}
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancel = cancel
+	c.mu.Unlock()
 	if c.UserID == "" {
-		id, _, err := mattermost.GetSelf(c.serverURL(), c.Token)
+		id, _, err := mattermost.GetSelfContext(ctx, c.serverURL(), c.Token)
 		if err == nil {
 			c.UserID = id
 		}
 	}
 	// Before anything is synced, so names come out in the right format.
 	c.resolveNameFormat(c.UserLogin.Log)
-	c.done = make(chan struct{})
-	go c.connectLoop(context.WithoutCancel(ctx))
+	go c.connectLoop(ctx, cancel, interval)
 }
 
-func (c *MattermostClient) connectLoop(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+func (c *MattermostClient) connectLoop(ctx context.Context, cancel context.CancelFunc, interval time.Duration) {
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+		c.mu.Lock()
+		c.cancel = nil
+		c.mu.Unlock()
+	}()
 	hints := make(chan channelLifecycleHint, 100)
-	go c.runChannelLifecycle(ctx, hints)
+	workers.Go(func() { c.runChannelLifecycle(ctx, hints) })
+	if interval > 0 {
+		workers.Go(func() { c.runLifecyclePoll(ctx, interval) })
+	}
 	submit := func(hint channelLifecycleHint) {
 		select {
 		case hints <- hint:
@@ -219,9 +245,12 @@ func (c *MattermostClient) connectLoop(ctx context.Context) {
 	}
 	backoff := 5 * time.Second
 	failures := 0
-	for {
+	for ctx.Err() == nil {
 		cl := mattermost.NewClient(c.serverURL(), c.Token)
-		if err := cl.Connect(); err != nil {
+		if err := cl.ConnectContext(ctx); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			failures++
 			c.UserLogin.BridgeState.Send(connectFailedState(failures, err))
 		} else {
@@ -229,12 +258,21 @@ func (c *MattermostClient) connectLoop(ctx context.Context) {
 			c.mu.Lock()
 			c.client = cl
 			c.mu.Unlock()
-			c.processEvents(submit) // blocks until WS closes
+			stopClose := context.AfterFunc(ctx, cl.Close)
+			c.processEvents(ctx, cl.Events, submit) // blocks until WS closes
+			stopClose()
+			if ctx.Err() != nil {
+				return
+			}
 			backoff = 5 * time.Second
+			if cl.ReconnectRequested() {
+				continue
+			}
+			c.UserLogin.BridgeState.Send(websocketDisconnectedState())
 		}
 		// Mattermost closes the WebSocket without an auth error event when the
 		// token is expired or revoked, so check the token over REST before retrying.
-		if _, _, err := mattermost.GetSelf(c.serverURL(), c.Token); errors.Is(err, mattermost.ErrUnauthorized) {
+		if _, _, err := mattermost.GetSelfContext(ctx, c.serverURL(), c.Token); errors.Is(err, mattermost.ErrUnauthorized) {
 			c.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateBadCredentials,
 				Error:      "mm-token-invalid",
@@ -243,8 +281,6 @@ func (c *MattermostClient) connectLoop(ctx context.Context) {
 			return
 		}
 		select {
-		case <-c.done:
-			return
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
@@ -255,8 +291,11 @@ func (c *MattermostClient) connectLoop(ctx context.Context) {
 	}
 }
 
-func (c *MattermostClient) processEvents(submitLifecycle func(channelLifecycleHint)) {
-	for raw := range c.client.Events {
+func (c *MattermostClient) processEvents(ctx context.Context, events <-chan any, submitLifecycle func(channelLifecycleHint)) {
+	for raw := range events {
+		if ctx.Err() != nil {
+			continue // drain the socket reader on shutdown
+		}
 		switch evt := raw.(type) {
 		case *mattermost.HelloEvent:
 			// When connected, load all channels and queue resyncs.
@@ -465,12 +504,10 @@ func (c *MattermostClient) processEvents(submitLifecycle func(channelLifecycleHi
 				Error:      "mm-auth-error",
 				Message:    evt.Message,
 			})
-			go c.Disconnect()
+			c.Disconnect()
 		}
 	}
 
-	// Events channel closed — WebSocket disconnected. connectLoop reconnects.
-	c.UserLogin.BridgeState.Send(websocketDisconnectedState())
 }
 
 // syncChannels fetches all teams + channels for the user and queues ChatResync events.
@@ -513,14 +550,11 @@ func (c *MattermostClient) syncChannels() {
 }
 
 func (c *MattermostClient) Disconnect() {
-	if c.done != nil {
-		close(c.done)
-	}
 	c.mu.RLock()
-	cl := c.client
+	cancel := c.cancel
 	c.mu.RUnlock()
-	if cl != nil {
-		cl.Close()
+	if cancel != nil {
+		cancel()
 	}
 }
 

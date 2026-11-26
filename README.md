@@ -107,6 +107,24 @@ stays visible but new messages are refused. Restoring the channel sets those
 levels back to 0. The bridge's own user keeps a higher power level and keeps
 syncing.
 
+## Channel lifecycle polling
+
+Set `network.channel_poll_interval` to a positive duration such as `1m`
+to detect archive and restore transitions missed by the Mattermost websocket.
+The default empty string disables polling. The bridge uses the first complete
+listing as a baseline and keeps it if a later listing is incomplete. A channel
+that disappears from the listing is checked with the same authenticated
+deletion probe used for websocket events. If the channel still exists, or access
+is forbidden after authenticating the same user, it is dropped from the poll
+baseline without resyncing or deleting its room: the user may have left or been
+removed. Rejoining adds it to the baseline again. Network failures and ambiguous
+responses remain eligible for retry; only a canonical, authenticated channel-not-found
+response queues deletion.
+
+Use the final, non-redirecting server URL when logging in (`server_url` in stored
+login metadata). The safety probes deliberately refuse redirects, so a redirecting
+URL leaves absent-channel probes inconclusive even if ordinary requests succeed.
+
 ## Development
 
 ```sh
