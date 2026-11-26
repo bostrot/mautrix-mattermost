@@ -22,8 +22,33 @@ func (c *MattermostClient) runChannelLifecycle(ctx context.Context, hints <-chan
 		case <-ctx.Done():
 			return
 		case hint := <-hints:
-			c.handleChannelLifecycle(ctx, hint.channelID, hint.allowDelete, c.queueLifecycleEvent)
+			c.processLifecycleHint(ctx, hint, c.queueLifecycleEvent)
 		}
+	}
+}
+
+// reconnectWebsocket closes the current websocket so connectLoop opens a new
+// one without reporting a disconnect. A new websocket starts with a fresh
+// Mattermost membership cache, which a restored channel needs.
+func (c *MattermostClient) reconnectWebsocket() {
+	if c.reconnectFn != nil {
+		c.reconnectFn()
+		return
+	}
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+	if client != nil {
+		client.CloseForReconnect()
+	}
+}
+
+func (c *MattermostClient) processLifecycleHint(ctx context.Context, hint channelLifecycleHint, queue func(bridgev2.RemoteEvent)) {
+	outcome := c.handleChannelLifecycle(ctx, hint.channelID, hint.allowDelete, queue)
+	// A restore announced over the websocket needs the same fresh connection
+	// as one found by polling (see runLifecyclePoll).
+	if !hint.allowDelete && outcome == lifecycleActive && ctx.Err() == nil {
+		c.reconnectWebsocket()
 	}
 }
 
