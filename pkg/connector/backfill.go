@@ -28,6 +28,11 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 		return nil, err
 	}
 
+	// In an archived room the logged-in user's Matrix account is read-only, so
+	// their own history is sent by their ghost instead, like everyone else's.
+	archived := c.channelArchived(channelID)
+	authors := map[string]bool{}
+
 	var intent bridgev2.MatrixAPI
 	if c.UserLogin != nil && c.UserLogin.Bridge != nil {
 		intent = c.UserLogin.Bridge.Bot
@@ -35,6 +40,7 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 
 	// pl.Order is newest-first; reverse to oldest-first for backfill.
 	backfill := make([]*bridgev2.BackfillMessage, 0, len(pl.Order))
+	var fromMe []bool // per message, whatever identity it is sent under
 	for i := len(pl.Order) - 1; i >= 0; i-- {
 		postID := pl.Order[i]
 		post, ok := pl.Posts[postID]
@@ -43,13 +49,9 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 		}
 
 		isFromMe := c.UserID != "" && post.UserID == c.UserID
-		sender := bridgev2.EventSender{
-			Sender:   networkid.UserID(post.UserID),
-			IsFromMe: isFromMe,
-		}
-		if isFromMe && c.UserLogin != nil {
-			sender.SenderLogin = c.UserLogin.ID
-		}
+		sender := c.backfillSender(post.UserID, archived)
+		authors[post.UserID] = true
+		fromMe = append(fromMe, isFromMe)
 
 		ts := post.Timestamp()
 		if ts.IsZero() {
@@ -73,7 +75,7 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 			Sender:           sender,
 			ID:               networkid.MessageID(post.ID),
 			Timestamp:        ts,
-			Reactions:        c.backfillReactions(post),
+			Reactions:        c.backfillReactionsFor(post, archived, authors),
 		})
 	}
 
@@ -83,11 +85,15 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 	// from the logged-in user (e.g. initial portal creation triggered by a
 	// self-sent message — we don't want to notify for our own history).
 	allFromMe := len(backfill) > 0
-	for _, m := range backfill {
-		if !m.Sender.IsFromMe {
+	for _, own := range fromMe {
+		if !own {
 			allFromMe = false
 			break
 		}
+	}
+
+	if archived {
+		c.allowArchivedPosting(ctx, params.Portal.MXID, authors)
 	}
 
 	return &bridgev2.FetchMessagesResponse{
@@ -107,6 +113,12 @@ func (c *MattermostClient) FetchMessages(ctx context.Context, params bridgev2.Fe
 // user and emoji are dropped. The emoji is converted exactly as for live
 // reactions, and the sender is built the same way as for the message itself.
 func (c *MattermostClient) backfillReactions(post *mattermost.Post) []*bridgev2.BackfillReaction {
+	return c.backfillReactionsFor(post, false, nil)
+}
+
+// backfillReactionsFor is backfillReactions for a room that may be archived
+// (see backfillSender). The reacting users are added to authors, if given.
+func (c *MattermostClient) backfillReactionsFor(post *mattermost.Post, archived bool, authors map[string]bool) []*bridgev2.BackfillReaction {
 	if post == nil || post.Metadata == nil || len(post.Metadata.Reactions) == 0 {
 		return nil
 	}
@@ -123,12 +135,9 @@ func (c *MattermostClient) backfillReactions(post *mattermost.Post) []*bridgev2.
 		}
 		seen[key] = true
 
-		sender := bridgev2.EventSender{Sender: networkid.UserID(r.UserID)}
-		if c.UserID != "" && r.UserID == c.UserID {
-			sender.IsFromMe = true
-			if c.UserLogin != nil {
-				sender.SenderLogin = c.UserLogin.ID
-			}
+		sender := c.backfillSender(r.UserID, archived)
+		if authors != nil {
+			authors[r.UserID] = true
 		}
 		var ts time.Time // zero: bridgev2 places it just after the message
 		if r.CreateAt > 0 {
@@ -145,4 +154,21 @@ func (c *MattermostClient) backfillReactions(post *mattermost.Post) []*bridgev2.
 		return nil
 	}
 	return out
+}
+
+// backfillSender is who a backfilled message or reaction by userID is sent as.
+// That is the user's ghost, except for the logged-in user, who is sent as
+// themselves. In an archived room the read-only overrides stop that Matrix
+// account, which is the point of them, so their own history is sent by their
+// ghost instead. The room keeps everything they wrote, under their Mattermost
+// name.
+func (c *MattermostClient) backfillSender(userID string, archived bool) bridgev2.EventSender {
+	sender := bridgev2.EventSender{Sender: networkid.UserID(userID)}
+	if !archived && c.UserID != "" && userID == c.UserID {
+		sender.IsFromMe = true
+		if c.UserLogin != nil {
+			sender.SenderLogin = c.UserLogin.ID
+		}
+	}
+	return sender
 }
