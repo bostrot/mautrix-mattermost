@@ -37,6 +37,7 @@ type MattermostClient struct {
 	channels map[string]*mattermost.Channel // keyed by channel ID
 	users    map[string]*mattermost.User    // keyed by user ID
 	cancel   context.CancelFunc             // stops the current connection and its workers
+	loopDone chan struct{}                  // closed when that connection's connectLoop has fully exited
 
 	// previews caches resolved Mattermost permalink cards. A message must never
 	// fail because a preview could not be built, so failures are cached too.
@@ -210,6 +211,8 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
+	loopDone := make(chan struct{})
+	c.loopDone = loopDone
 	c.mu.Unlock()
 	if c.UserID == "" {
 		id, _, err := mattermost.GetSelfContext(ctx, c.serverURL(), c.Token)
@@ -219,10 +222,10 @@ func (c *MattermostClient) Connect(ctx context.Context) {
 	}
 	// Before anything is synced, so names come out in the right format.
 	c.resolveNameFormat(c.UserLogin.Log)
-	go c.connectLoop(ctx, cancel, interval)
+	go c.connectLoop(ctx, cancel, interval, loopDone)
 }
 
-func (c *MattermostClient) connectLoop(ctx context.Context, cancel context.CancelFunc, interval time.Duration) {
+func (c *MattermostClient) connectLoop(ctx context.Context, cancel context.CancelFunc, interval time.Duration, loopDone chan<- struct{}) {
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()
@@ -230,6 +233,7 @@ func (c *MattermostClient) connectLoop(ctx context.Context, cancel context.Cance
 		c.mu.Lock()
 		c.cancel = nil
 		c.mu.Unlock()
+		close(loopDone)
 	}()
 	hints := make(chan channelLifecycleHint, 100)
 	workers.Go(func() { c.runChannelLifecycle(ctx, hints) })
@@ -504,7 +508,8 @@ func (c *MattermostClient) processEvents(ctx context.Context, events <-chan any,
 				Error:      "mm-auth-error",
 				Message:    evt.Message,
 			})
-			c.Disconnect()
+			// Called from the loop itself, so it cannot wait for the loop.
+			c.stopConnection(false)
 		}
 	}
 
@@ -549,12 +554,35 @@ func (c *MattermostClient) syncChannels() {
 	}
 }
 
+// disconnectWait bounds how long Disconnect waits for the connection loop to
+// stop. A handler stuck in a request without a context must not hang the
+// bridge, so a timeout is logged instead.
+var disconnectWait = 10 * time.Second
+
+// Disconnect stops the connection and waits for its loop and workers to exit,
+// so that when bridgev2 replaces this client the old loop is no longer
+// syncing channels or handling events next to the new one.
 func (c *MattermostClient) Disconnect() {
+	c.stopConnection(true)
+}
+
+// stopConnection cancels the connection. It only waits for the loop to exit
+// when wait is set; the loop itself must not wait for itself.
+func (c *MattermostClient) stopConnection(wait bool) {
 	c.mu.RLock()
-	cancel := c.cancel
+	cancel, loopDone := c.cancel, c.loopDone
 	c.mu.RUnlock()
-	if cancel != nil {
-		cancel()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if !wait || loopDone == nil {
+		return
+	}
+	select {
+	case <-loopDone:
+	case <-time.After(disconnectWait):
+		c.UserLogin.Log.Warn().Dur("timeout", disconnectWait).Msg("Mattermost connection loop did not stop in time")
 	}
 }
 
