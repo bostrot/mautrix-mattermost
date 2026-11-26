@@ -31,6 +31,9 @@ func (m *MattermostConnector) Init(bridge *bridgev2.Bridge) {
 }
 
 func (m *MattermostConnector) Start(ctx context.Context) error {
+	if _, err := m.Config.channelPollInterval(); err != nil {
+		return err
+	}
 	if m.Config != nil {
 		if _, err := parseDisplayNames(m.Config.DisplayNames); err != nil {
 			return fmt.Errorf("network.display_names: %w", err)
@@ -76,6 +79,7 @@ func (m *MattermostConnector) GetConfig() (string, any, configupgrade.Upgrader) 
 // upgradeConfig carries the user's network options over the example config.
 func upgradeConfig(helper configupgrade.Helper) {
 	helper.Copy(configupgrade.Str, "display_names")
+	helper.Copy(configupgrade.Str, "channel_poll_interval")
 	helper.Copy(configupgrade.Str|configupgrade.Null, "space_avatar")
 }
 
@@ -525,6 +529,7 @@ func parseServerURL(rawURL string) (string, error) {
 
 // Config holds the bridge-specific configuration.
 type Config struct {
+	ChannelPollInterval string `yaml:"channel_poll_interval"`
 	// DisplayNames picks how Mattermost users are named in Matrix (see
 	// displaynames.go). Empty means "nickname".
 	DisplayNames string `yaml:"display_names"`
@@ -548,4 +553,9 @@ display_names: nickname
 # The MXC URI used as the Mattermost network icon: the avatar of your personal
 # Mattermost space in Matrix. Leave empty for none.
 space_avatar:
+
+# Poll for missed archive and restore events at this interval (e.g. 1m).
+# An empty string disables polling.
+# Use the final, non-redirecting server URL at login: safety probes refuse redirects.
+channel_poll_interval: ""
 `

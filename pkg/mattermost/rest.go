@@ -237,6 +237,35 @@ func GetChannelsForUser(serverURL, token, userID, teamID string) ([]*Channel, er
 	return channels, nil
 }
 
+// GetAllChannelsIncludingArchived fetches the user's channels across all
+// teams, including DMs and archived channels. Mattermost paginates internally
+// and streams a single JSON array. A partial stream must fail decoding.
+func GetAllChannelsIncludingArchived(ctx context.Context, serverURL, token, userID string) (map[string]*Channel, error) {
+	if userID == "" {
+		return nil, errors.New("cannot list channels without a Mattermost user ID")
+	}
+	var listing []struct {
+		Channel
+		DeleteAt *int64 `json:"delete_at"`
+	}
+	path := "/api/v4/users/" + url.PathEscape(userID) + "/channels?include_deleted=true"
+	if err := doGetContext(ctx, serverURL, token, path, &listing); err != nil {
+		return nil, err
+	}
+	if listing == nil {
+		return nil, errors.New("Mattermost channel listing was not an array")
+	}
+	channels := make(map[string]*Channel, len(listing))
+	for _, entry := range listing {
+		if entry.ID == "" || entry.DeleteAt == nil || *entry.DeleteAt < 0 || channels[entry.ID] != nil {
+			return nil, errors.New("invalid entry in Mattermost channel listing")
+		}
+		entry.Channel.DeleteAt = *entry.DeleteAt
+		channels[entry.ID] = &entry.Channel
+	}
+	return channels, nil
+}
+
 // GetChannel fetches a single channel by ID.
 // GetPost fetches a single post by ID. It is used to build previews for
 // permalinks that were pasted into a message.

@@ -48,13 +48,19 @@ func (c *MattermostClient) displayNamesSetting() string {
 	if c.displayNamesFn != nil {
 		return c.displayNamesFn()
 	}
-	if c.UserLogin == nil || c.UserLogin.Bridge == nil {
-		return ""
-	}
-	if conn, ok := c.UserLogin.Bridge.Network.(*MattermostConnector); ok && conn.Config != nil {
-		return conn.Config.DisplayNames
+	if cfg := c.networkConfig(); cfg != nil {
+		return cfg.DisplayNames
 	}
 	return ""
+}
+
+func (c *MattermostClient) networkConfig() *Config {
+	if c.UserLogin != nil && c.UserLogin.Bridge != nil {
+		if conn, ok := c.UserLogin.Bridge.Network.(*MattermostConnector); ok {
+			return conn.Config
+		}
+	}
+	return nil
 }
 
 // resolveNameFormat decides the name format for this connection and stores
