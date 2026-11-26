@@ -32,3 +32,22 @@ func channelPowerLevels(ch *mattermost.Channel) *bridgev2.PowerLevelOverrides {
 		},
 	}
 }
+
+// ghostPowerLevel is the power level of the channel's Mattermost ghosts. The
+// archive overrides gate ordinary members, but the bridge still has to post as
+// ghosts in an archived room: the "unarchived the channel" notice is bridged
+// before the restore resync lifts the restriction, and catch-up backfill after
+// an archive sends old messages as their authors. Ghosts therefore sit at the
+// archived send level (and at 0 again once the channel is restored); only
+// Matrix users, who cannot be ghosts, are held back by the overrides.
+//
+// The logged-in user is deliberately left out: their Matrix account is what
+// the read-only overrides are meant to stop, and it may be the same account
+// that double-puppets their Mattermost messages.
+func ghostPowerLevel(ch *mattermost.Channel) *int {
+	level := 0
+	if ch != nil && ch.DeleteAt > 0 {
+		level = archivedChannelEventLevel
+	}
+	return ptr.Ptr(level)
+}

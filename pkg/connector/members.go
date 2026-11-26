@@ -46,6 +46,7 @@ func (c *MattermostClient) chatMembers(ctx context.Context, ch *mattermost.Chann
 		if otherID := dmOtherUserID(ch.Name, c.UserID); otherID != "" {
 			list.OtherUserID = networkid.UserID(otherID)
 			member := joinedMember(otherID)
+			member.PowerLevel = ghostPowerLevel(ch)
 			if u := c.memberProfiles(ctx, []string{otherID})[otherID]; u != nil {
 				member.UserInfo = c.userInfo(u)
 			}
@@ -74,6 +75,7 @@ func (c *MattermostClient) chatMembers(ctx context.Context, ch *mattermost.Chann
 	profiles := c.memberProfiles(ctx, ids)
 	for _, uid := range ids {
 		member := joinedMember(uid)
+		member.PowerLevel = ghostPowerLevel(ch)
 		if u := profiles[uid]; u != nil {
 			member.UserInfo = c.userInfo(u)
 		}

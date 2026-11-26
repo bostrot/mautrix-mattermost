@@ -15,6 +15,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/bostrot/mautrix-mattermost/pkg/mattermost"
 )
@@ -252,5 +253,69 @@ func TestUserInfoNameHasNoTrailingSpace(t *testing.T) {
 	info := c.userInfo(&mattermost.User{ID: "u", Username: "erin", FirstName: "Erin"})
 	if *info.Name != "Erin" {
 		t.Fatalf("name = %q", *info.Name)
+	}
+}
+
+// Ghosts must be able to post into an archived room (restore notice, catch-up
+// backfill) while the logged-in user stays subject to the read-only overrides.
+func TestChatMembersGhostPowerFollowsArchiveState(t *testing.T) {
+	ctx := context.Background()
+	const meID, otherID = "aaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, tc := range []struct {
+		name      string
+		channel   *mattermost.Channel
+		wantGhost int
+	}{
+		{"active channel", &mattermost.Channel{ID: "c1", Type: "O", Name: "town"}, 0},
+		{"archived channel", &mattermost.Channel{ID: "c1", Type: "O", Name: "town", DeleteAt: 123}, archivedChannelEventLevel},
+		{"archived group", &mattermost.Channel{ID: "c1", Type: "G", Name: "group", DeleteAt: 123}, archivedChannelEventLevel},
+		{"dm", &mattermost.Channel{ID: "c1", Type: "D", Name: meID + "__" + otherID}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := memberClient(map[string][]string{"c1": {"me", "erin", "frank"}}, false)
+			if tc.channel.IsDM() {
+				c.UserID = meID
+			}
+			got := c.chatMembers(ctx, tc.channel)
+			ghosts := 0
+			for id, m := range got.MemberMap {
+				if m.IsFromMe {
+					if m.PowerLevel != nil {
+						t.Errorf("logged-in user %s must not get an explicit level, got %d", id, *m.PowerLevel)
+					}
+					continue
+				}
+				ghosts++
+				if m.PowerLevel == nil || *m.PowerLevel != tc.wantGhost {
+					t.Errorf("ghost %s level=%v, want %d", id, m.PowerLevel, tc.wantGhost)
+				}
+			}
+			if ghosts == 0 {
+				t.Fatal("no ghost members to check")
+			}
+		})
+	}
+}
+
+// The levels must hold through bridgev2's own Apply: ghosts at the archive
+// level can post, the Matrix user at 0 cannot.
+func TestArchivedRoomGhostsCanPostUserCannot(t *testing.T) {
+	pl := &event.PowerLevelsEventContent{Users: map[id.UserID]int{"@bridge:example.org": 100}}
+	overrides := channelPowerLevels(&mattermost.Channel{DeleteAt: 123})
+	overrides.Apply("@bridge:example.org", pl)
+	pl.EnsureUserLevelAs("@bridge:example.org", "@mm_erin:example.org", *ghostPowerLevel(&mattermost.Channel{DeleteAt: 123}))
+	if got, need := pl.GetUserLevel("@mm_erin:example.org"), pl.GetEventLevel(event.EventMessage); got < need {
+		t.Fatalf("ghost level %d cannot send (needs %d)", got, need)
+	}
+	if got, need := pl.GetUserLevel("@alice:example.org"), pl.GetEventLevel(event.EventMessage); got >= need {
+		t.Fatalf("Matrix user level %d can send in archived room (needs %d)", got, need)
+	}
+	// Restore: ghost drops back to 0, as does the send requirement.
+	active := &mattermost.Channel{}
+	overrides = channelPowerLevels(active)
+	overrides.Apply("@bridge:example.org", pl)
+	pl.EnsureUserLevelAs("@bridge:example.org", "@mm_erin:example.org", *ghostPowerLevel(active))
+	if pl.GetUserLevel("@mm_erin:example.org") != 0 || pl.GetEventLevel(event.EventMessage) != 0 {
+		t.Fatal("restore did not return ghost and send levels to 0")
 	}
 }
