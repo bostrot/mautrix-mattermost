@@ -103,13 +103,19 @@ func (c *MattermostClient) teamChatInfo(teamID string) (*bridgev2.ChatInfo, erro
 	return c.teamInfo(team), nil
 }
 
-// queueTeamResync creates or updates a team's space (name and icon).
-func (c *MattermostClient) queueTeamResync(team *mattermost.Team) {
-	key := networkid.PortalKey{ID: teamPortalID(team.ID)}
-	// Match the receiver the framework uses to look up channel parents.
+// teamPortalKey is the key of a team's space. Its receiver matches the one the
+// framework uses to look up channel parents.
+func (c *MattermostClient) teamPortalKey(teamID string) networkid.PortalKey {
+	key := networkid.PortalKey{ID: teamPortalID(teamID)}
 	if br := c.UserLogin.Bridge; br != nil && br.Config != nil && br.Config.SplitPortals {
 		key.Receiver = c.UserLogin.ID
 	}
+	return key
+}
+
+// queueTeamResync creates or updates a team's space (name and icon).
+func (c *MattermostClient) queueTeamResync(team *mattermost.Team) {
+	key := c.teamPortalKey(team.ID)
 	c.queueTeamEvent(&simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -126,4 +132,23 @@ func (c *MattermostClient) queueTeamEvent(ev bridgev2.RemoteEvent) {
 		return
 	}
 	c.UserLogin.QueueRemoteEvent(ev)
+}
+
+// handleLeaveTeam removes a team's space once the logged-in user is no longer
+// in the team. The space is deleted for this login only, so another login
+// that shares the space keeps it. The team's channel rooms are left alone, as
+// they are for any channel the user leaves. Rejoining the team recreates the
+// space the next time one of its channels is synced. Other members leaving
+// are ignored: the server announces those to the whole team.
+func (c *MattermostClient) handleLeaveTeam(evt *mattermost.LeaveTeamEvent) {
+	if evt == nil || evt.TeamID == "" || evt.UserID != c.UserID {
+		return
+	}
+	c.queueTeamEvent(&simplevent.ChatDelete{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatDelete,
+			PortalKey: c.teamPortalKey(evt.TeamID),
+		},
+		OnlyForMe: true,
+	})
 }

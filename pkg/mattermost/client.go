@@ -285,6 +285,12 @@ func (c *Client) parseEvent(raw []byte) {
 			c.Events <- &TeamUpdatedEvent{Team: &t}
 		}
 
+	case "leave_team":
+		teamID, userID := strFromData(env.Data, "team_id"), strFromData(env.Data, "user_id")
+		if teamID != "" && userID != "" {
+			c.Events <- &LeaveTeamEvent{TeamID: teamID, UserID: userID}
+		}
+
 	case "multiple_channels_viewed":
 		if evt := channelsViewedEvent(env.Data); evt != nil {
 			c.Events <- evt

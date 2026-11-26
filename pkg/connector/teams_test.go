@@ -210,3 +210,41 @@ func TestQueueTeamResyncPortalKey(t *testing.T) {
 		})
 	}
 }
+
+func TestLeaveTeamDeletesSpaceForThisLoginOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		split    bool
+		receiver networkid.UserLoginID
+	}{
+		{name: "default"},
+		{name: "split", split: true, receiver: "login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := teamClient("http://unused")
+			c.UserLogin.Bridge = &bridgev2.Bridge{Config: &bridgeconfig.BridgeConfig{SplitPortals: tc.split}}
+			var got []bridgev2.RemoteEvent
+			c.queueTeamFn = func(ev bridgev2.RemoteEvent) { got = append(got, ev) }
+			feed := make(chan any, 3)
+			c.client = &mattermost.Client{Events: feed}
+			feed <- &mattermost.LeaveTeamEvent{TeamID: "t1", UserID: "someone-else"} // announced to the whole team
+			feed <- &mattermost.LeaveTeamEvent{TeamID: "t1", UserID: "me"}
+			feed <- &mattermost.LeaveTeamEvent{TeamID: "", UserID: "me"}
+			close(feed)
+			c.processEvents(context.Background(), feed, nil)
+			if len(got) != 1 {
+				t.Fatalf("queued %d events, want 1 (own departure only)", len(got))
+			}
+			del, ok := got[0].(*simplevent.ChatDelete)
+			if !ok || del.GetType() != bridgev2.RemoteEventChatDelete {
+				t.Fatalf("event = %#v", got[0])
+			}
+			if want := (networkid.PortalKey{ID: "team:t1", Receiver: tc.receiver}); del.PortalKey != want {
+				t.Fatalf("portal = %+v, want %+v", del.PortalKey, want)
+			}
+			if !del.DeleteOnlyForMe() || del.DeleteChildren() {
+				t.Fatal("must delete only for this login and keep the channel rooms")
+			}
+		})
+	}
+}

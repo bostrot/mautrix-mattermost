@@ -489,6 +489,9 @@ func (c *MattermostClient) processEvents(ctx context.Context, events <-chan any,
 		case *mattermost.TeamUpdatedEvent:
 			c.queueTeamResync(evt.Team)
 
+		case *mattermost.LeaveTeamEvent:
+			c.handleLeaveTeam(evt)
+
 		case *mattermost.UserUpdatedEvent:
 			if evt.User == nil {
 				continue
