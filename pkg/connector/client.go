@@ -178,10 +178,12 @@ func (c *MattermostClient) channelResyncEvent(ch *mattermost.Channel) *simpleven
 		// Fetch members when the portal handles the event so the websocket
 		// loop never waits on the members request.
 		GetChatInfoFunc: func(ctx context.Context, _ *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+			members := c.chatMembers(ctx, ch)
+			members.PowerLevels = channelPowerLevels(ch)
 			return &bridgev2.ChatInfo{
 				Name:        name,
 				Type:        &roomType,
-				Members:     c.chatMembers(ctx, ch),
+				Members:     members,
 				CanBackfill: true,
 				ParentID:    channelParent(ch),
 			}, nil

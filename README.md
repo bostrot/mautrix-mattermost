@@ -98,6 +98,15 @@ stops the bridge at startup with an error naming the option.
 Mattermost network icon, which clients show as the avatar of your personal Mattermost
 space. Empty (the default) sets none.
 
+## Archived channels
+
+When a Mattermost channel is archived, its Matrix room becomes read-only for
+ordinary members: the bridge raises the room's default event power level and
+the `m.room.message` and `m.room.encrypted` levels to 50, so existing history
+stays visible but new messages are refused. Restoring the channel sets those
+levels back to 0. The bridge's own user keeps a higher power level and keeps
+syncing.
+
 ## Channel lifecycle polling
 
 Set `network.channel_poll_interval` to a positive duration such as `1m`

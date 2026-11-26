@@ -85,6 +85,7 @@ func (c *MattermostClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 		Members: members,
 	}
 	if ok {
+		members.PowerLevels = channelPowerLevels(ch)
 		info.ParentID = channelParent(ch)
 	}
 	return info, nil
