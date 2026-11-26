@@ -75,3 +75,48 @@ func TestChannelLifecycleProbe(t *testing.T) {
 		})
 	}
 }
+
+// A channel_restored websocket event must reconnect like a poll-found restore;
+// other hints and inconclusive probes must not.
+func TestChannelLifecycleWorkerReconnectsOnRestore(t *testing.T) {
+	const missing = `{"id":"app.channel.get.existing.app_error","status_code":404}`
+	for _, tc := range []struct {
+		name          string
+		allowDelete   bool
+		status        int
+		body          string
+		wantReconnect bool
+	}{
+		{"restored active channel", false, 200, `{"id":"channel","delete_at":0}`, true},
+		{"restore hint but still archived", false, 200, `{"id":"channel","delete_at":123}`, false},
+		{"restore hint, probe inconclusive", false, 503, "", false},
+		{"restore hint, channel gone", false, 404, missing, false},
+		{"deleted hint on active channel", true, 200, `{"id":"channel","delete_at":0}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v4/users/me":
+					fmt.Fprint(w, `{"id":"user"}`)
+				case "/api/v4/channels/channel":
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			reconnects := make(chan struct{}, 4)
+			login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{}}
+			c := &MattermostClient{
+				UserLogin: login, baseURL: srv.URL, Token: "fixture", UserID: "user",
+				channels:    map[string]*mattermost.Channel{},
+				reconnectFn: func() { reconnects <- struct{}{} },
+			}
+			c.processLifecycleHint(context.Background(), channelLifecycleHint{channelID: "channel", allowDelete: tc.allowDelete}, func(bridgev2.RemoteEvent) {})
+			if got := len(reconnects) > 0; got != tc.wantReconnect {
+				t.Fatalf("reconnect=%v want %v", got, tc.wantReconnect)
+			}
+		})
+	}
+}

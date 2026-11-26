@@ -53,6 +53,7 @@ type MattermostClient struct {
 	markThreadReadFn func(teamID, rootID string, ms int64) error
 	threadRootFn     func(threadMXID string) string
 	readNowFn        func() time.Time
+	reconnectFn      func()
 	queueReceiptFn   func(bridgev2.RemoteEvent)
 
 	// mentions caches username lookups for @mentions (see mentions.go).

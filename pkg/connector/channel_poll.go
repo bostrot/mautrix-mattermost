@@ -95,13 +95,7 @@ func (c *MattermostClient) runLifecyclePoll(ctx context.Context, interval time.D
 		var reconnect bool
 		previous, reconnect = c.pollChannelLifecycle(ctx, previous, c.queueLifecycleEvent)
 		if reconnect && ctx.Err() == nil {
-			// A new websocket starts with a fresh Mattermost membership cache.
-			c.mu.RLock()
-			client := c.client
-			c.mu.RUnlock()
-			if client != nil {
-				client.CloseForReconnect()
-			}
+			c.reconnectWebsocket()
 		}
 	})
 }
