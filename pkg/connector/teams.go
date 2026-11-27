@@ -2,8 +2,10 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
@@ -103,13 +105,19 @@ func (c *MattermostClient) teamChatInfo(teamID string) (*bridgev2.ChatInfo, erro
 	return c.teamInfo(team), nil
 }
 
-// queueTeamResync creates or updates a team's space (name and icon).
-func (c *MattermostClient) queueTeamResync(team *mattermost.Team) {
-	key := networkid.PortalKey{ID: teamPortalID(team.ID)}
-	// Match the receiver the framework uses to look up channel parents.
+// teamPortalKey is the key of a team's space. Its receiver matches the one the
+// framework uses to look up channel parents.
+func (c *MattermostClient) teamPortalKey(teamID string) networkid.PortalKey {
+	key := networkid.PortalKey{ID: teamPortalID(teamID)}
 	if br := c.UserLogin.Bridge; br != nil && br.Config != nil && br.Config.SplitPortals {
 		key.Receiver = c.UserLogin.ID
 	}
+	return key
+}
+
+// queueTeamResync creates or updates a team's space (name and icon).
+func (c *MattermostClient) queueTeamResync(team *mattermost.Team) {
+	key := c.teamPortalKey(team.ID)
 	c.queueTeamEvent(&simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -126,4 +134,69 @@ func (c *MattermostClient) queueTeamEvent(ev bridgev2.RemoteEvent) {
 		return
 	}
 	c.UserLogin.QueueRemoteEvent(ev)
+}
+
+// handleLeaveTeam removes a team's space once the logged-in user is no longer
+// in the team. The space is deleted for this login only, so another login
+// that shares the space keeps it. The team's channel rooms are left alone, as
+// they are for any channel the user leaves. Rejoining the team recreates the
+// space the next time one of its channels is synced. Other members leaving
+// are ignored: the server announces those to the whole team.
+func (c *MattermostClient) handleLeaveTeam(evt *mattermost.LeaveTeamEvent) {
+	if evt == nil || evt.TeamID == "" || evt.UserID != c.UserID {
+		return
+	}
+	key := c.teamPortalKey(evt.TeamID)
+	// The space row cannot be deleted while the team's channel portals still
+	// point at it through the parent key: the delete fails and the space stays.
+	// Detaching first clears only the parent link, so the channel rooms survive.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err := c.detachSpaceChildren(ctx, key)
+	cancel()
+	if err != nil && c.UserLogin != nil {
+		c.UserLogin.Log.Warn().Err(err).Str("team_id", evt.TeamID).
+			Msg("Failed to detach channels from the leaving team's space")
+	}
+	c.queueTeamEvent(&simplevent.ChatDelete{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatDelete,
+			PortalKey: key,
+		},
+		OnlyForMe: true,
+	})
+}
+
+// detachSpaceChildren clears the parent link of every portal under a space, so
+// the space can be deleted without taking the channel rooms with it.
+func (c *MattermostClient) detachSpaceChildren(ctx context.Context, key networkid.PortalKey) error {
+	if c.detachChildrenFn != nil {
+		return c.detachChildrenFn(ctx, key)
+	}
+	if c.UserLogin == nil || c.UserLogin.Bridge == nil || c.UserLogin.Bridge.DB == nil {
+		return nil
+	}
+	return detachChildren(ctx, c.UserLogin.Bridge.DB.Portal, key)
+}
+
+// portalStore is the part of the portal table that detaching needs.
+type portalStore interface {
+	GetChildren(ctx context.Context, parentKey networkid.PortalKey) ([]*database.Portal, error)
+	Update(ctx context.Context, p *database.Portal) error
+}
+
+func detachChildren(ctx context.Context, store portalStore, key networkid.PortalKey) error {
+	children, err := store.GetChildren(ctx, key)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		if child.ParentKey != key {
+			continue
+		}
+		child.ParentKey = networkid.PortalKey{}
+		if err := store.Update(ctx, child); err != nil {
+			return fmt.Errorf("detach %s: %w", child.ID, err)
+		}
+	}
+	return nil
 }

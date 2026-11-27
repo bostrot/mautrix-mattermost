@@ -179,6 +179,13 @@ type TeamUpdatedEvent struct {
 	Team *Team
 }
 
+// LeaveTeamEvent signals that a user left, or was removed from, a team. The
+// server also sends it to the team's other members, so check UserID.
+type LeaveTeamEvent struct {
+	TeamID string
+	UserID string
+}
+
 // ChannelMember represents a user's membership in a channel.
 type ChannelMember struct {
 	ChannelID string `json:"channel_id"`

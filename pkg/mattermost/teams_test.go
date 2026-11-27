@@ -15,3 +15,17 @@ func TestUpdateTeamDecoding(t *testing.T) {
 		t.Fatalf("team = %+v", ev.Team)
 	}
 }
+
+func TestLeaveTeamDecoding(t *testing.T) {
+	c := &Client{Events: make(chan interface{}, 4)}
+	c.parseEvent([]byte(`{"event":"leave_team","data":{"team_id":"t1","user_id":"u1"}}`))
+	c.parseEvent([]byte(`{"event":"leave_team","data":{"user_id":"u1"}}`))
+	c.parseEvent([]byte(`{"event":"leave_team","data":{"team_id":"t1"}}`))
+	if len(c.Events) != 1 {
+		t.Fatalf("events = %d, want 1", len(c.Events))
+	}
+	ev := (<-c.Events).(*LeaveTeamEvent)
+	if ev.TeamID != "t1" || ev.UserID != "u1" {
+		t.Fatalf("event = %+v", ev)
+	}
+}

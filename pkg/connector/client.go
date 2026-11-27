@@ -54,6 +54,9 @@ type MattermostClient struct {
 	threadRootFn     func(threadMXID string) string
 	readNowFn        func() time.Time
 	queueReceiptFn   func(bridgev2.RemoteEvent)
+	// detachChildrenFn overrides clearing the parent link of a space's
+	// children in tests.
+	detachChildrenFn func(context.Context, networkid.PortalKey) error
 
 	// mentions caches username lookups for @mentions (see mentions.go).
 	mentions mentionCache
@@ -488,6 +491,9 @@ func (c *MattermostClient) processEvents(ctx context.Context, events <-chan any,
 
 		case *mattermost.TeamUpdatedEvent:
 			c.queueTeamResync(evt.Team)
+
+		case *mattermost.LeaveTeamEvent:
+			c.handleLeaveTeam(evt)
 
 		case *mattermost.UserUpdatedEvent:
 			if evt.User == nil {
